@@ -1,0 +1,15 @@
+{
+  "name": "office-hours-prep",
+  "displayName": "Office Hours Prep",
+  "description": "Analyze the active Python file and highlight likely problem lines.",
+  "version": "0.1.0",
+  "publisher": "office-hours-prep",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onCommand:office-hours-prep.analyzeCurrentFile"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [{ "command": "office-hours-prep.analyzeCurrentFile", "title": "Office Hours Prep: Analyze Current Python File" }],
+    "configuration": { "title": "Office Hours Prep", "properties": { "officeHoursPrep.apiUrl": { "type": "string", "default": "http://127.0.0.1:8000", "description": "URL where the Office Hours Prep FastAPI server is running." } } }
+  }
+}

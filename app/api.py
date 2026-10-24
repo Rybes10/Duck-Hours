@@ -1,0 +1,472 @@
+"""HTTP routes and request models for Office Hours Prep."""
+
+import ast
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import httpx
+from dotenv import load_dotenv
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+
+load_dotenv()
+STATIC = Path(__file__).resolve().parent.parent / "static"
+router = APIRouter()
+
+
+class AnalyzeRequest(BaseModel):
+    intent: str = Field("", max_length=5000)
+    code: str = Field(..., min_length=1, max_length=50000)
+    problem: str = Field("", max_length=5000)
+    mode: str = Field("demo", pattern="^(demo|gemini)$")
+
+
+class Issue(BaseModel):
+    category: str
+    title: str
+    explanation: str
+    fix: str
+    line: Optional[int] = None
+    severity: str = "warning"
+
+
+class Analysis(BaseModel):
+    mode: str
+    summary: str
+    issues: List[Issue]
+    walkthrough: List[str]
+
+
+class WorkspaceFile(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    code: str = Field("", max_length=50000)
+
+
+class RunRequest(BaseModel):
+    language: str = Field("python", pattern="^(python|javascript|typescript|ruby|go|java|c|cpp)$")
+    code: str = Field(..., min_length=1, max_length=50000)
+    stdin: str = Field("", max_length=10000)
+    intent: str = Field("", max_length=5000)
+    active_file: str = Field("main.py", min_length=1, max_length=100)
+    files: List[WorkspaceFile] = Field(default_factory=list, max_length=20)
+
+
+class RunResponse(BaseModel):
+    language: str
+    status: str
+    output: str
+    error: Optional[str] = None
+    line: Optional[int] = None
+
+
+class HintRequest(BaseModel):
+    language: str = Field("python", max_length=30)
+    code: str = Field(..., min_length=1, max_length=50000)
+    intent: str = Field("", max_length=5000)
+    compiler_error: str = Field("", max_length=5000)
+
+
+class Hint(BaseModel):
+    line: int
+    message: str
+
+
+class HintResponse(BaseModel):
+    hints: List[Hint]
+
+
+class GeneratedFileOverride(BaseModel):
+    file_name: str = Field(..., min_length=1, max_length=100)
+    contents: str = Field("", max_length=50000)
+
+
+class GeneratedTestCase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    stdin: str = Field("", max_length=10000)
+    files: List[GeneratedFileOverride] = Field(default_factory=list, max_length=20)
+    expected_output: str = Field("", max_length=50000)
+
+
+class GenerateTestCasesRequest(BaseModel):
+    language: str = Field("python", max_length=30)
+    active_file: str = Field("main.py", min_length=1, max_length=100)
+    code: str = Field(..., min_length=1, max_length=50000)
+    files: List[WorkspaceFile] = Field(default_factory=list, max_length=20)
+    existing_cases: List[GeneratedTestCase] = Field(default_factory=list, max_length=50)
+    intent: str = Field("", max_length=5000)
+    constraints: str = Field("", max_length=5000)
+
+
+class GenerateTestCasesResponse(BaseModel):
+    cases: List[GeneratedTestCase]
+
+
+def make_issue(category: str, title: str, explanation: str, fix: str,
+               line: Optional[int] = None, severity: str = "warning") -> Issue:
+    return Issue(category=category, title=title, explanation=explanation,
+                 fix=fix, line=line, severity=severity)
+
+
+def make_result(mode: str, issues: List[Issue], payload: AnalyzeRequest) -> Analysis:
+    if issues and issues[0].severity == "error":
+        summary = "I found a likely {} problem on line {}.".format(
+            issues[0].category, issues[0].line or "?")
+    elif issues:
+        summary = "I found {} likely issue{} to investigate.".format(
+            len(issues), "s" if len(issues) != 1 else "")
+    else:
+        summary = "No likely issue was found."
+
+    walkthrough = ["Start with the highlighted line and say what value you expected there."]
+    walkthrough.append("Then trace the value backward: where was it created, and what type does it have?")
+    if payload.problem:
+        walkthrough.append("Finally, compare that trace with the symptom you described: {}".format(
+            payload.problem.strip()))
+    return Analysis(mode=mode, summary=summary, issues=issues[:5], walkthrough=walkthrough)
+
+
+def demo_analysis(payload: AnalyzeRequest) -> Analysis:
+    """Return deterministic beginner-friendly checks without an external API."""
+    try:
+        tree = ast.parse(payload.code)
+    except SyntaxError as exc:
+        issue = make_issue(
+            "Compile error", "Python cannot understand this line yet",
+            "Python found an unfinished or incorrectly structured expression.",
+            "Check for a missing colon, quote, parenthesis, or indentation near this line.",
+            exc.lineno or 1, "error")
+        return make_result("demo", [issue], payload)
+
+    issues: List[Issue] = []
+    assigned = set(dir(__builtins__)) if not isinstance(__builtins__, dict) else set(__builtins__)
+    assigned.update({"True", "False", "None"})
+    seen_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    assigned.add(target.id)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if node.id not in assigned and node.id not in seen_names:
+                issues.append(make_issue(
+                    "NameError", "This name may not exist yet",
+                    "Python looks for a value named '{}', but no assignment or import was found.".format(node.id),
+                    "Define or import '{}' before using it, or check its spelling.".format(node.id),
+                    node.lineno, "error"))
+                seen_names.add(node.id)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "input":
+            issues.append(make_issue(
+                "Type", "input() always returns text",
+                "Values read with input() are strings, even when they look like numbers.",
+                "Convert the value with int() or float() before numeric operations.", node.lineno))
+        elif isinstance(node, ast.Compare) and any(isinstance(op, ast.Is) for op in node.ops):
+            issues.append(make_issue(
+                "Logic", "Use == for value comparison",
+                "is checks object identity rather than ordinary value equality.",
+                "Replace is with == when comparing values.", node.lineno))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            if isinstance(node.right, ast.Constant) and node.right.value == 0:
+                issues.append(make_issue(
+                    "Runtime", "This division is by zero",
+                    "The expression will raise ZeroDivisionError when it runs.",
+                    "Check that the denominator is not zero before dividing.", node.lineno, "error"))
+
+    if "index" in payload.problem.lower() and "list" in payload.problem.lower():
+        issues.append(make_issue(
+            "Runtime", "The index may be outside the list",
+            "A list index error means the requested position is not present in the list.",
+            "Print len(your_list) and check that the index is between 0 and len(list) - 1."))
+    if not issues:
+        issues.append(make_issue(
+            "Understand", "No obvious issue found",
+            "The demo checks common syntax, name, type, logic, and runtime patterns.",
+            "Compare expected and actual values with a print() or debugger breakpoint."))
+    return make_result("demo", issues, payload)
+
+
+async def meta_completion(prompt: str) -> str:
+    key = os.getenv("META_API_KEY") or os.getenv("MODEL_API_KEY")
+    if not key:
+        raise HTTPException(status_code=400, detail="META_API_KEY is not configured. Use Demo mode or add it to .env.")
+    model = os.getenv("META_MODEL", "muse-spark-1.3")
+    url = "https://api.meta.ai/v1/chat/completions"
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": "Bearer " + key},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "developer", "content": "You are a kind beginner-friendly programming tutor."},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Meta returned an error: {}".format(response.text[:300]))
+    try:
+        return response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail="Meta returned an unexpected response.") from exc
+
+
+async def meta_analysis(payload: AnalyzeRequest) -> Analysis:
+    prompt = """You are a kind Python teaching assistant. Analyze the student's code and symptom.
+Return ONLY valid JSON with this shape: {{"summary": str, "issues": [{{"category": str, "title": str,
+"explanation": str, "fix": str, "line": integer|null, "severity": "error"|"warning"}}],
+"walkthrough": [str]}}. Mention no more than five issues. Be specific and beginner-friendly.
+Intent: {intent}
+Code:\n{code}
+Problem: {problem}""".format(
+        intent=payload.intent, code=payload.code, problem=payload.problem)
+    try:
+        text = await meta_completion(prompt)
+        text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
+        result = Analysis(mode="meta", **json.loads(text))
+        result.issues = result.issues[:5]
+        return result
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="Gemini returned an unexpected response.") from exc
+
+
+def safe_file_name(name: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", name)) and name not in {".", ".."}
+
+
+def command_for(language: str, active_path: Path, workspace: Path) -> Tuple[Optional[List[str]], Optional[List[str]]]:
+    """Return compile and run commands for the selected source file."""
+    if language == "python":
+        return [sys.executable, "-m", "py_compile", str(active_path)], [sys.executable, str(active_path)]
+    if language == "javascript":
+        executable = shutil.which("node")
+        if not executable:
+            return None, None
+        return [executable, "--check", str(active_path)], [executable, str(active_path)]
+    if language == "typescript":
+        compiler = shutil.which("tsc")
+        executable = shutil.which("node")
+        sources = sorted(str(path) for path in workspace.glob("*.ts"))
+        if not compiler or not executable:
+            return None, None
+        compiled = workspace / (active_path.stem + ".js")
+        return [compiler, "--target", "ES2020", "--module", "commonjs", "--outDir", str(workspace), *sources], [executable, str(compiled)]
+    if language == "ruby":
+        executable = shutil.which("ruby")
+        if not executable:
+            return None, None
+        return [executable, "-c", str(active_path)], [executable, str(active_path)]
+    if language == "go":
+        executable = shutil.which("go")
+        sources = sorted(str(path) for path in workspace.glob("*.go"))
+        if not executable or not sources:
+            return None, None
+        return None, [executable, "run", *sources]
+    if language == "java":
+        compiler = shutil.which("javac")
+        executable = shutil.which("java")
+        sources = sorted(str(path) for path in workspace.glob("*.java"))
+        if not compiler or not executable or not sources:
+            return None, None
+        return [compiler, "-d", str(workspace), *sources], [executable, "-cp", str(workspace), active_path.stem]
+    if language in {"c", "cpp"}:
+        compiler = shutil.which("gcc" if language == "c" else "g++")
+        extension = ".c" if language == "c" else ".cpp"
+        sources = sorted(str(path) for path in workspace.glob("*" + extension))
+        executable = str(workspace / "program")
+        if not compiler or not sources:
+            return None, None
+        return [compiler, *sources, "-o", executable], [executable]
+    return None, None
+
+
+def invoke(command: Sequence[str], workspace: Path, stdin: str = "") -> subprocess.CompletedProcess:
+    return subprocess.run(
+        list(command), cwd=str(workspace), input=stdin, capture_output=True,
+        text=True, timeout=10, check=False)
+
+
+def response_line(text: str) -> Optional[int]:
+    patterns = (r'File ".*?", line (\d+)', r"\.\w+:(\d+):")
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def run_code(payload: RunRequest) -> RunResponse:
+    if len(payload.files) > 20:
+        raise HTTPException(status_code=413, detail="A workspace can contain at most 20 files.")
+
+    sources: Dict[str, str] = {}
+    for workspace_file in payload.files:
+        if not safe_file_name(workspace_file.name):
+            raise HTTPException(status_code=400, detail="File names must be simple names without directories.")
+        if workspace_file.name in sources:
+            raise HTTPException(status_code=400, detail="File names must be unique.")
+        sources[workspace_file.name] = workspace_file.code
+
+    if not safe_file_name(payload.active_file):
+        raise HTTPException(status_code=400, detail="The active file name is invalid.")
+    sources[payload.active_file] = payload.code
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="office-hours-prep-") as directory:
+            workspace = Path(directory)
+            for name, source in sources.items():
+                (workspace / name).write_text(source, encoding="utf-8")
+            active_path = workspace / payload.active_file
+            compile_command, run_command = command_for(payload.language, active_path, workspace)
+            if run_command is None:
+                message = "The required compiler or interpreter is not installed for {}.".format(payload.language)
+                return RunResponse(language=payload.language, status="unavailable", output=message, error=message)
+            if compile_command:
+                compiled = invoke(compile_command, workspace)
+                if compiled.returncode != 0:
+                    detail = (compiled.stderr or compiled.stdout).strip()
+                    return RunResponse(language=payload.language, status="compile_error",
+                                       output=detail, error="The source files could not be compiled.",
+                                       line=response_line(detail))
+            completed = invoke(run_command, workspace, payload.stdin)
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        message = "Execution exceeded the 10 second limit."
+        return RunResponse(language=payload.language, status="runtime_error", output=output,
+                           error=message)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="The local runner could not start: {}".format(exc)) from exc
+
+    if completed.returncode == 0:
+        return RunResponse(language=payload.language, status="success", output=completed.stdout,
+                           error=completed.stderr or None)
+    detail = completed.stderr.strip() or completed.stdout.strip() or "The program exited with a non-zero status."
+    return RunResponse(language=payload.language, status="runtime_error", output=completed.stdout,
+                       error=detail, line=response_line(detail))
+
+
+async def meta_hint(payload: HintRequest) -> HintResponse:
+    prompt = """You are giving a beginner a gentle, vague debugging hint. Do not reveal a full fix.
+Return ONLY valid JSON in this exact shape: {{"hints": [{{"line": integer, "message": string}}]}}.
+Return no more than three hints. Use only line numbers from the supplied code. Keep each message to one short sentence.
+Language: {language}
+Program purpose: {intent}
+Compiler or runtime message: {error}
+Code:\n{code}""".format(language=payload.language, intent=payload.intent,
+                            error=payload.compiler_error, code=payload.code)
+    try:
+        text = await meta_completion(prompt)
+        text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
+        return HintResponse(**json.loads(text))
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="Gemini returned an unexpected response.") from exc
+
+
+async def generate_test_cases(payload: GenerateTestCasesRequest) -> GenerateTestCasesResponse:
+    file_names = sorted({workspace_file.name for workspace_file in payload.files} | {payload.active_file})
+    source = "\n".join([payload.code] + [workspace_file.code for workspace_file in payload.files])
+    source_lines = [line for line in source.splitlines() if line.strip() and not line.lstrip().startswith(("#", "//"))]
+    branches = len(re.findall(r"\b(if|elif|else|switch|case|match|catch|except)\b", source))
+    loops = len(re.findall(r"\b(for|while|do)\b", source))
+    functions = len(re.findall(r"\b(def|function|func)\b", source))
+    input_calls = len(re.findall(r"\b(input|readline|scanf|Scanner)\b", source))
+    complexity_score = branches + (2 * loops) + functions + input_calls + max(0, len(payload.files) - 1)
+    if len(source_lines) <= 6 and complexity_score <= 1 and input_calls == 0:
+        complexity, max_cases = "very simple", 1
+    elif complexity_score <= 3:
+        complexity, max_cases = "simple", 1
+    elif complexity_score <= 7:
+        complexity, max_cases = "moderate", 3
+    else:
+        complexity, max_cases = "complex", 6
+
+    existing_cases = "\n".join(
+        "- {name}: stdin={stdin!r}; files={files}; expected={expected!r}".format(
+            name=test_case.name,
+            stdin=test_case.stdin[:300],
+            files=[(fixture.file_name, fixture.contents[:200]) for fixture in test_case.files],
+            expected=test_case.expected_output[:300],
+        )
+        for test_case in payload.existing_cases
+    ) or "None"
+    prompt = """Generate up to {max_cases} useful ADDITIONAL test cases for the provided program.
+Return only JSON with this shape: {{"cases":[{{"name":string,"stdin":string,"files":[{{"file_name":string,"contents":string}}],"expected_output":string}}]}}.
+Program complexity estimate: {complexity} ({complexity_score} structural signals across {line_count} non-empty source lines).
+Scale the number and sophistication of cases to that complexity. A simple greeting or constant-output program usually needs at most one case; do not generate repetitive cases merely to fill the limit.
+Existing cases are listed below. Add only meaningful cases that test behavior not already covered. Return an empty cases array if no useful additional case remains.
+Use concise names. Include normal and boundary cases that follow the provided constraints.
+Use stdin for standard input. Use files only to override files from the available file list.
+Never invent file names; use only these exact names: {file_names}.
+Expected output must match stdout exactly, excluding trailing newlines.
+Existing cases:\n{existing_cases}
+Language: {language}
+Active file: {active_file}
+Program purpose: {intent}
+Constraints: {constraints}
+Code:\n{code}
+Files:\n{files}""".format(
+        max_cases=max_cases,
+        complexity=complexity,
+        complexity_score=complexity_score,
+        line_count=len(source_lines),
+        file_names=", ".join(file_names),
+        language=payload.language,
+        active_file=payload.active_file,
+        intent=payload.intent or "Not specified",
+        constraints=payload.constraints or "Not specified",
+        existing_cases=existing_cases,
+        code=payload.code,
+        files="\n\n".join("--- {} ---\n{}".format(file.name, file.code) for file in payload.files))
+    try:
+        text = await meta_completion(prompt)
+        text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
+        result = GenerateTestCasesResponse(**json.loads(text))
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="Gemini returned unexpected test cases.") from exc
+
+    allowed_names = set(file_names)
+    for test_case in result.cases:
+        if any(fixture.file_name not in allowed_names for fixture in test_case.files):
+            raise HTTPException(status_code=502, detail="Gemini referenced a file outside this workspace.")
+    result.cases = result.cases[:max_cases]
+    return result
+
+
+@router.get("/")
+async def index() -> FileResponse:
+    return FileResponse(STATIC / "index.html")
+
+
+@router.get("/api/health")
+async def health() -> Dict[str, Any]:
+    return {"ok": True, "meta_configured": bool(os.getenv("META_API_KEY") or os.getenv("MODEL_API_KEY"))}
+
+
+@router.post("/api/analyze", response_model=Analysis)
+async def analyze(payload: AnalyzeRequest) -> Analysis:
+    return await meta_analysis(payload) if payload.mode == "gemini" else demo_analysis(payload)
+
+
+@router.post("/api/run", response_model=RunResponse)
+async def run(payload: RunRequest) -> RunResponse:
+    return run_code(payload)
+
+
+@router.post("/api/hint", response_model=HintResponse)
+async def hint(payload: HintRequest) -> HintResponse:
+    return await meta_hint(payload)
+
+
+@router.post("/api/testcases", response_model=GenerateTestCasesResponse)
+async def generate_cases(payload: GenerateTestCasesRequest) -> GenerateTestCasesResponse:
+    return await generate_test_cases(payload)
