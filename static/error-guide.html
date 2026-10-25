@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Learn about this error · Office Hours Prep</title>
+  <style>
+    :root{--ink:#202832;--muted:#687581;--paper:#f5f7f8;--card:#fff;--line:#d7dce1;--blue:#314b68;--accent:#e36b48}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,sans-serif}
+    .topbar{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 7vw;background:#e9edf0;border-bottom:1px solid #c7cfd6}
+    .brand{color:var(--ink);font-weight:800;text-decoration:none}.brand span{color:var(--accent)}.topbar a:last-child{color:var(--blue);font-size:13px;font-weight:700}
+    main{width:min(760px,calc(100% - 32px));margin:0 auto;padding:54px 0 70px}.eyebrow{margin:0 0 12px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:1.5px}
+    h1{margin:0 0 14px;font:500 clamp(34px,6vw,54px)/1.08 Georgia,serif;letter-spacing:-1px}h2{margin:0 0 10px;font-size:20px}p{line-height:1.6;color:var(--muted)}
+    .lead{max-width:640px;margin:0 0 28px;font-size:17px}.card{margin:14px 0;padding:24px;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 14px #2028320d}
+    .checklist{margin:0;padding-left:22px;color:var(--muted);line-height:1.8}.example{padding:14px 16px;background:#202832;color:#eef2f4;border-radius:5px;overflow:auto;font:13px/1.6 ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap}
+    .back{display:inline-block;margin-top:18px;padding:11px 15px;border-radius:4px;background:var(--blue);color:#fff;text-decoration:none;font-weight:800;font-size:13px}.note{font-size:13px}
+    @media(max-width:620px){main{padding-top:36px}.card{padding:19px}.topbar{padding:0 18px}.topbar a:last-child{font-size:12px}}
+  </style>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/">office hours<span> prep</span></a><a href="/">Back to my code</a></header>
+  <main>
+    <p class="eyebrow">A SIMPLE EXPLANATION</p>
+    <h1 id="title">Let’s make this error less mysterious.</h1>
+    <p id="lead" class="lead">An error is Python’s way of saying it needs more information or a different instruction. It does not mean you are bad at coding.</p>
+    <section class="card"><h2>What does it mean?</h2><p id="meaning"></p></section>
+    <section class="card"><h2>What should I check?</h2><ul id="checks" class="checklist"></ul></section>
+    <section class="card"><h2>Small example</h2><pre id="example" class="example"></pre><p id="example-note" class="note"></p></section>
+    <a class="back" href="/">Return to my code</a>
+  </main>
+  <script>
+    const guides = {
+      compile: {name:'Code shape', meaning:'The computer could not understand the way the code was written, so it could not start the program.', checks:['Look for a missing colon, quote, parenthesis, or bracket.','Check that indented lines line up with the line they belong to.','Read the line named by the message first, then look at the line just above it.'], example:'if score > 10\n    print("Great")', note:'This needs a colon after the condition: if score > 10:'},
+      syntaxerror: {name:'SyntaxError', meaning:'Python found a sentence that is not written in a form it recognizes.', checks:['Check punctuation such as :, (), [], {}, and quotation marks.','Make sure a line that starts an if, for, while, def, or class statement ends with a colon.','The real mistake can be just before the line Python points to.'], example:'if age >= 18\n    print("Adult")', note:'The if line needs a colon at the end.'},
+      indentationerror: {name:'IndentationError', meaning:'The spaces at the beginning of a line do not match the block around it.', checks:['Use the same number of spaces for lines in the same block.','Do not mix tabs and spaces.','Check the line above for the statement that started the block.'], example:'if ready:\nprint("Start")', note:'The print line should be indented under the if line.'},
+      runtime: {name:'A problem while running', meaning:'The code was readable, but something went wrong while the program was doing its work.', checks:['Read the line highlighted by Office Hours Prep.','Ask what value the program had at that moment.','Check the program purpose and the input you gave it.'], example:'number = 10\nprint(number / 0)', note:'The program can be written correctly but still fail with a value it cannot use.'},
+      zerodivisionerror: {name:'ZeroDivisionError', meaning:'The program tried to divide a number by zero. Division by zero has no ordinary result.', checks:['Find the number after the division sign (/).','Check whether that number can become 0.','Decide what your program should do when the divisor is 0.'], example:'total = 10\ncount = 0\naverage = total / count', note:'Check count before dividing.'},
+      typeerror: {name:'TypeError', meaning:'The program used a value in a way that does not fit its kind. For example, it may try to add text to a number.', checks:['Look at the kinds of values on the highlighted line.','Use int() or float() when text should become a number.','Check whether a function received the kind of value it expects.'], example:'age = "18"\nnext_year = age + 1', note:'age is text here, not a number.'},
+      nameerror: {name:'NameError', meaning:'Python was asked for a name, such as a variable or function, that it cannot find yet.', checks:['Check the spelling of the name.','Make sure the name is created before it is used.','If it belongs to another file, check that it was imported.'], example:'print(total)\n\ntotal = 3', note:'total is used before it is created.'},
+      indexerror: {name:'IndexError', meaning:'The program asked for a position in a list or sequence that is not there.', checks:['Check the list length with len(your_list).','Remember that the first position is 0.','Make sure the position is still valid after the list changes.'], example:'colors = ["red", "blue"]\nprint(colors[2])', note:'This list has positions 0 and 1, not position 2.'},
+      keyerror: {name:'KeyError', meaning:'The program asked a dictionary for a key that dictionary does not contain.', checks:['Compare the requested key with the keys actually stored.','Check spelling and capitalization.','Use .get() when a missing key is an expected possibility.'], example:'person = {"name": "Ari"}\nprint(person["age"])', note:'There is no age key in this dictionary.'},
+      valueerror: {name:'ValueError', meaning:'The kind of value was acceptable, but its actual contents could not be used for that operation.', checks:['Look at the text being converted or used.','Check for empty text, extra characters, or the wrong format.','Decide how the program should respond to an unexpected value.'], example:'age = int("eighteen")', note:'The text does not contain digits that int() can convert.'},
+      attributeerror: {name:'AttributeError', meaning:'The program asked a value for a feature or action that it does not have.', checks:['Check the value’s type on the highlighted line.','Check the spelling of the attribute or method.','Make sure the value is not None before using it.'], example:'name = "Ari"\nname.append("!")', note:'Strings do not have the list method append().'},
+      importerror: {name:'ImportError', meaning:'Python found the import instruction but could not find the requested item.', checks:['Check the spelling of the module or item.','Make sure the item really exists in that module.','Check that the correct Python environment is being used.'], example:'from math import not_a_math_function', note:'The requested item is not provided by math.'},
+      modulenotfounderror: {name:'ModuleNotFoundError', meaning:'Python could not find a module that the program asked to import.', checks:['Check the module spelling.','Check that the package is installed in the environment running the program.','If it is your own file, check that it is in the project folder.'], example:'import a_package_that_is_not_installed', note:'Python cannot import a package that is not available.'},
+      logic: {name:'Logic issue', meaning:'The program runs, but its result or behavior may not match what you said the program should do.', checks:['Compare the actual result with the purpose you wrote.','Try a normal case and an edge case, such as an empty list or zero.','Trace the value through the highlighted line one step at a time.'], example:'scores = [80, 90]\nprint(sum(scores) / 1)', note:'The code runs, but dividing by 1 does not calculate the average of two scores.'},
+      type: {name:'Value kind issue', meaning:'A value may be the wrong kind for the operation, such as text where a number is needed.', checks:['Look at whether the value is text, a number, a list, or another kind.','Check values returned by input(), which start as text.','Convert the value only when that matches the program purpose.'], example:'answer = input("Number: ")\nprint(answer + 1)', note:'input() gives text, even when the person types a number.'},
+      timeouterror: {name:'Time limit', meaning:'The program kept running longer than the allowed time.', checks:['Look for a loop that never reaches a stopping point.','Check whether the loop moves toward its stopping condition.','Try a smaller input to see when the program slows down.'], example:'while True:\n    print("still running")', note:'This loop has no stopping condition.'},
+      unavailable: {name:'Tool unavailable', meaning:'The computer does not have the compiler or interpreter needed for the selected language.', checks:['Check that the language is installed on your computer.','Restart the terminal after installing it.','Try Python first if you are testing the website.'], example:'Selected language: Go\nGo compiler: not found', note:'The program cannot start until the required tool is available.'},
+      logicerror: {name:'Logic issue', meaning:'The program runs, but its result may not match the purpose you described.', checks:['Compare the result with your purpose.','Try a small example where you already know the answer.','Trace each important value through the highlighted line.'], example:'expected = 10\nactual = 5\nprint(actual)', note:'The code runs, but it prints a different value than the purpose expects.'}
+    };
+    const normalize = value => String(value || 'runtime').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const key = normalize(new URLSearchParams(location.search).get('type'));
+    const guide = guides[key] || guides[key.replace(/error$/, '')] || guides.runtime;
+    document.title = `${guide.name} · Office Hours Prep`;
+    document.querySelector('#title').textContent = guide.name;
+    document.querySelector('#lead').textContent = 'You do not need to understand every word yet. Start with the highlighted line and use the checklist one step at a time.';
+    document.querySelector('#meaning').textContent = guide.meaning;
+    document.querySelector('#checks').innerHTML = guide.checks.map(check => `<li>${check}</li>`).join('');
+    document.querySelector('#example').textContent = guide.example;
+    document.querySelector('#example-note').textContent = guide.note;
+  </script>
+</body>
+</html>

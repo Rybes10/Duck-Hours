@@ -8,6 +8,7 @@ let currentLanguage = 'python';
 let activeFileId = 'file-0';
 let nextFileNumber = 1;
 const files = [];
+const closedFiles = [];
 const runButton = document.querySelector('#run');
 const output = document.querySelector('#output');
 const outputStatus = document.querySelector('#output-status');
@@ -21,6 +22,7 @@ let nextTestCaseId = 1;
 let selectedTestCaseId = null;
 let lastRun = null;
 let hintDecorations = [];
+let activeIssue = null;
 addFileButton.disabled = true;
 const extensionByLanguage = {python: 'py', javascript: 'js', typescript: 'ts', ruby: 'rb', go: 'go', java: 'java', c: 'c', cpp: 'cpp'};
 const languageByExtension = {py: 'python', js: 'javascript', mjs: 'javascript', ts: 'typescript', rb: 'ruby', go: 'go', java: 'java', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp'};
@@ -37,6 +39,29 @@ importInput.accept = '.py,.js,.mjs,.ts,.rb,.go,.java,.c,.h,.cpp,.cc,.hpp,.txt';
 importInput.hidden = true;
 document.querySelector('.editor-toolbar').insertBefore(importButton, runButton);
 document.body.append(importInput);
+
+// Keep the workspace language friendly for people who are new to coding.
+document.querySelector('#run-status').textContent = 'Runs on this computer';
+document.querySelector('#intro .lede').textContent = 'Write down what you want your program to do, try it in the editor, and get a gentle next step when you need help.';
+document.querySelector('#intro .intro-grid div:nth-child(2) strong').textContent = 'Run your code here';
+document.querySelector('#intro .intro-grid div:nth-child(2) span').textContent = 'Press Run to see what your program does.';
+document.querySelector('#intro .intro-grid div:nth-child(3) strong').textContent = 'Learn from one issue';
+document.querySelector('#intro .intro-grid div:nth-child(3) span').textContent = 'Ask for a hint only when you want one.';
+document.querySelector('#brief-heading').textContent = 'About your program';
+document.querySelector('.brief-panel>p').textContent = 'Tell us what your program should do and what rules it needs to follow.';
+document.querySelector('label[for="time-limit"]').textContent = 'Time';
+document.querySelector('label[for="memory-limit"]').textContent = 'Memory';
+document.querySelector('label[for="constraints"]').textContent = 'Rules to follow';
+document.querySelector('#constraints').placeholder = 'For example: the list may be empty.';
+document.querySelector('#constraints').nextElementSibling.textContent = 'Add any special rules or edge cases.';
+function growSuggestionBox(field) {
+  field.style.height = 'auto';
+  field.style.height = `${field.scrollHeight}px`;
+}
+document.querySelectorAll('#intent,#constraints').forEach(field => {
+  field.addEventListener('input', () => growSuggestionBox(field));
+  growSuggestionBox(field);
+});
 importButton.addEventListener('click', () => importInput.click());
 importInput.addEventListener('change', async () => {
   await importFiles([...importInput.files]);
@@ -62,4 +87,16 @@ function createElement(tagName, className, text) {
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+}
+
+async function parseApiResponse(response, fallbackMessage) {
+  const body = await response.text();
+  let data;
+  try {
+    data = body ? JSON.parse(body) : {};
+  } catch {
+    throw new Error(`The server returned an unexpected response (${response.status}).`);
+  }
+  if (!response.ok) throw new Error(data.detail || fallbackMessage);
+  return data;
 }

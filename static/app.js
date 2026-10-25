@@ -145,7 +145,7 @@ function showHints(hints) {
     endLineNumber: hint.line,
     startColumn: 1,
     endColumn: model.getLineMaxColumn(hint.line),
-    message: 'A gentle hint is available for this line.',
+    message: '',
     severity: monaco.MarkerSeverity.Hint
   })));
   codeEditor.revealLineInCenter(hints[0].line);
