@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from .analysis import demo_analysis, generate_test_cases, meta_analysis, meta_fix, meta_hint
@@ -44,7 +44,16 @@ async def health() -> Dict[str, Any]:
 
 @router.post("/api/analyze", response_model=Analysis)
 async def analyze(payload: AnalyzeRequest) -> Analysis:
-    return await meta_analysis(payload) if payload.mode == "gemini" else demo_analysis(payload)
+    if payload.mode != "gemini":
+        return demo_analysis(payload)
+    try:
+        return await meta_analysis(payload)
+    except HTTPException:
+        # A successful local run must still receive a logic result when the
+        # external analysis service is unavailable or returns an invalid reply.
+        # The deterministic checks are narrower, but they are preferable to
+        # reporting that logic was not checked at all.
+        return demo_analysis(payload)
 
 
 @router.post("/api/run", response_model=RunResponse)
