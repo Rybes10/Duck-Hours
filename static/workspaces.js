@@ -39,7 +39,7 @@ if (savedWorkspace?.settings) {
   const settings = savedWorkspace.settings;
   for (const [selector, value] of Object.entries({
     '#intent': settings.intent, '#skip-logic': settings.skipLogicCheck,
-    '#time-limit': settings.timeLimit, '#memory-limit': settings.memoryLimit,
+    '#memory-limit': settings.memoryLimit,
     '#constraints': settings.constraints
   })) {
     const field = document.querySelector(selector);
@@ -81,8 +81,8 @@ function saveWorkspaceNow() {
     settings: {
       intent: document.querySelector('#intent').value,
       skipLogicCheck: Boolean(document.querySelector('#skip-logic')?.checked),
-      timeLimit: document.querySelector('#time-limit').value,
       memoryLimit: document.querySelector('#memory-limit').value,
+      executionTimeout: document.querySelector('#execution-timeout')?.value || '10',
       constraints: document.querySelector('#constraints').value,
       testCount: document.querySelector('#testcase-request-count')?.value || 5
     }
@@ -250,7 +250,7 @@ document.addEventListener('input', event => {
   if (event.target.matches('#intent,#constraints,#testcase-request-count')) persistWorkspace();
 });
 document.addEventListener('change', event => {
-  if (event.target.matches('#time-limit,#memory-limit,#skip-logic')) persistWorkspace();
+  if (event.target.matches('#memory-limit,#skip-logic,#execution-timeout')) persistWorkspace();
 });
 window.addEventListener('beforeunload', saveWorkspaceNow);
 

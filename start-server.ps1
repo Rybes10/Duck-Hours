@@ -9,7 +9,7 @@ if (-not (Test-Path -LiteralPath $python)) {
 }
 
 Set-Location -LiteralPath $projectRoot
-Write-Host 'Starting Office Hours Prep at http://127.0.0.1:8000'
+Write-Host 'Starting Duck Hours at http://127.0.0.1:8000'
 Write-Host 'Press Ctrl+C to stop the server.'
 & $python -m uvicorn app.main:app --reload
 exit $LASTEXITCODE

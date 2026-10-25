@@ -2,15 +2,100 @@
 
 import json
 import shutil
+import time
 import unittest
 from unittest.mock import patch
 
-from app.analysis import generate_test_cases, meta_analysis
-from app.runner import run_code
-from app.schemas import AnalyzeRequest, GenerateTestCasesRequest, RunRequest, WorkspaceFile
+from app.analysis import demo_analysis, generate_test_cases, meta_analysis, meta_hint, neutralize_provider_language
+from app.runner import likely_non_terminating_line, run_code
+from app.schemas import AnalyzeRequest, GenerateTestCasesRequest, HintRequest, RunRequest, TestTargetRequest, WorkspaceFile
 
 
 class RunnerFileTests(unittest.TestCase):
+    def test_run_compiles_only_the_active_cpp_file(self) -> None:
+        if not shutil.which("g++"):
+            self.skipTest("g++ is not installed")
+        result = run_code(RunRequest(
+            language="cpp",
+            active_file="main.cpp",
+            code="#include <iostream>\nint main() { std::cout << 7; }",
+            files=[WorkspaceFile(name="unrelated.cpp", code="int broken( {" )],
+        ))
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.output, "7")
+
+    def test_required_cpp_header_error_names_the_dependency(self) -> None:
+        if not shutil.which("g++"):
+            self.skipTest("g++ is not installed")
+        result = run_code(RunRequest(
+            language="cpp",
+            active_file="main.cpp",
+            code='#include "helper.h"\nint main() { return helper(); }',
+            files=[WorkspaceFile(name="helper.h", code="#error broken header")],
+        ))
+        self.assertEqual(result.status, "compile_error")
+        self.assertEqual(result.error_source, "dependency")
+        self.assertEqual(result.error_file, "helper.h")
+        self.assertEqual(result.line, 1)
+        self.assertIn('"helper.h"', result.error or "")
+
+    def test_run_compiles_only_the_active_java_file_and_uses_its_declared_class(self) -> None:
+        if not (shutil.which("javac") and shutil.which("java")):
+            self.skipTest("Java is not installed")
+        result = run_code(RunRequest(
+            language="java",
+            active_file="current.java",
+            code="class Helper { } class Current { public static void main(String[] args) { System.out.println(7); } }",
+            files=[WorkspaceFile(name="unrelated.java", code="public class Unrelated { public static void broken( {" )],
+        ))
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.output, "7\n")
+
+    def test_required_java_dependency_error_names_the_dependency(self) -> None:
+        if not (shutil.which("javac") and shutil.which("java")):
+            self.skipTest("Java is not installed")
+        result = run_code(RunRequest(
+            language="java",
+            active_file="Main.java",
+            code="public class Main { public static void main(String[] args) { System.out.println(Helper.value()); } }",
+            files=[
+                WorkspaceFile(name="Helper.java", code="class Helper { static int value( { return 7; } }"),
+                WorkspaceFile(name="Unrelated.java", code="public class Unrelated { public static void broken( {"),
+            ],
+        ))
+        self.assertEqual(result.status, "compile_error")
+        self.assertEqual(result.error_source, "dependency")
+        self.assertEqual(result.error_file, "Helper.java")
+        self.assertEqual(result.line, 1)
+
+    def test_python_runtime_dependency_error_names_the_imported_file(self) -> None:
+        result = run_code(RunRequest(
+            language="python",
+            active_file="main.py",
+            code="import helper\nprint(helper.value())",
+            files=[WorkspaceFile(name="helper.py", code="def value():\n    return missing_name\n")],
+        ))
+        self.assertEqual(result.status, "runtime_error")
+        self.assertEqual(result.error_source, "dependency")
+        self.assertEqual(result.error_file, "helper.py")
+        self.assertEqual(result.line, 2)
+
+    def test_demo_analysis_does_not_flag_valid_function_names_or_parameters(self) -> None:
+        result = demo_analysis(AnalyzeRequest(
+            intent="Label a score and wrap text in parentheses.",
+            code=(
+                'def grade_label(score):\n'
+                '    if score >= 90:\n'
+                '        return "excellent"\n'
+                '    return "passing"\n\n'
+                'def parenthesize(text):\n'
+                '    return f"({text})"\n\n'
+                'print(grade_label(90))\n'
+                'print(parenthesize("Duck Hours"))\n'
+            ),
+        ))
+        self.assertFalse([issue for issue in result.issues if issue.category == "NameError"])
+
     def test_java_static_method_harness_qualifies_the_submitted_class(self) -> None:
         source = "public class Demo { public static int add(int a, int b) { return a + b; } }"
         from app.test_targets import build_harness_code, detect_test_target
@@ -73,6 +158,100 @@ class RunnerFileTests(unittest.TestCase):
             self.assertEqual(result.status, "success")
             self.assertIn("Office Hours Prep result 1: 5", result.output)
 
+    def test_selected_cpp_function_runs_in_a_generated_wrapper(self) -> None:
+        from app.test_targets import build_harness_code, detect_test_target
+
+        source = "#include <string>\nstd::string wrap(const std::string& text) { return \"(\" + text + \")\"; }\n"
+        function_line = source.splitlines()[1]
+        target = detect_test_target(
+            "cpp",
+            source,
+            active_file="main.cpp",
+            selection_start_line=2,
+            selection_end_line=2,
+            selection_start_column=1,
+            selection_end_column=len(function_line) + 1,
+        )
+        self.assertTrue(target["ready"])
+        self.assertEqual(target["function_name"], "wrap")
+        self.assertEqual(target["return_type"], "std::string")
+        harness = build_harness_code(target, "main.cpp", ['wrap("Duck")', 'wrap("")'])
+        self.assertIsNotNone(harness)
+        self.assertIn("__office_hours_harness.cpp", harness["file"])
+        self.assertIn("wrap(\"Duck\")", harness["code"])
+        if shutil.which("g++"):
+            result = run_code(RunRequest(
+                language="cpp",
+                active_file="main.cpp",
+                code=source,
+                harness_file=harness["file"],
+                harness_code=harness["code"],
+            ))
+            self.assertEqual(result.status, "success")
+            self.assertIn("Office Hours Prep result 1: (Duck)", result.output)
+            self.assertIn("Office Hours Prep result 2: ()", result.output)
+
+    def test_selected_cpp_integer_function_runs_in_a_generated_wrapper(self) -> None:
+        from app.test_targets import build_harness_code, detect_test_target
+
+        source = "int add(int left, int right) { return left + right; }\n"
+        function_line = source.splitlines()[0]
+        target = detect_test_target(
+            "cpp",
+            source,
+            active_file="main.cpp",
+            selection_start_line=1,
+            selection_end_line=1,
+            selection_start_column=1,
+            selection_end_column=len(function_line) + 1,
+        )
+        self.assertTrue(target["ready"])
+        self.assertEqual(target["return_type"], "int")
+        harness = build_harness_code(target, "main.cpp", ["add(2, 3)"])
+        self.assertIsNotNone(harness)
+        if shutil.which("g++"):
+            result = run_code(RunRequest(
+                language="cpp",
+                active_file="main.cpp",
+                code=source,
+                harness_file=harness["file"],
+                harness_code=harness["code"],
+            ))
+            self.assertEqual(result.status, "success")
+            self.assertIn("Office Hours Prep result 1: 5", result.output)
+
+    def test_selected_cpp_function_can_use_a_workspace_header(self) -> None:
+        from app.test_targets import build_harness_code, detect_test_target
+
+        source = "#include <math_helpers.h>\nint double_value_for_test(int value) { return double_value(value); }\n"
+        function_line = source.splitlines()[1]
+        target = detect_test_target(
+            "cpp",
+            source,
+            active_file="main.cpp",
+            selection_start_line=2,
+            selection_end_line=2,
+            selection_start_column=1,
+            selection_end_column=len(function_line) + 1,
+        )
+        harness = build_harness_code(target, "main.cpp", ["double_value_for_test(21)"])
+        self.assertIsNotNone(harness)
+        self.assertIn("#include <math_helpers.h>", harness["code"])
+        if shutil.which("g++"):
+            result = run_code(RunRequest(
+                language="cpp",
+                active_file="main.cpp",
+                code=source,
+                files=[WorkspaceFile(
+                    name="math_helpers.h",
+                    code="inline int double_value(int value) { return value * 2; }\n",
+                )],
+                harness_file=harness["file"],
+                harness_code=harness["code"],
+            ))
+            self.assertEqual(result.status, "success")
+            self.assertIn("Office Hours Prep result 1: 42", result.output)
+
     def test_snapshot_contains_existing_and_generated_files(self) -> None:
         result = run_code(RunRequest(
             code=(
@@ -92,8 +271,62 @@ class RunnerFileTests(unittest.TestCase):
         self.assertEqual(snapshot["result.txt"], "HELLO")
         self.assertIsNotNone(result.memory_usage_bytes)
 
+    def test_requested_timeout_stops_a_non_terminating_program(self) -> None:
+        started = time.monotonic()
+        result = run_code(RunRequest(
+            code="while True:\n    pass\n",
+            timeout_seconds=1,
+        ))
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.status, "runtime_error")
+        self.assertEqual(result.error_type, "TimeoutError")
+        self.assertIn("1 second", result.error or "")
+        self.assertLess(elapsed, 5)
+
+    def test_recursive_runtime_points_to_function_definition(self) -> None:
+        result = run_code(RunRequest(
+            code="def recurse():\n    return recurse()\n\nrecurse()\n",
+        ))
+        self.assertEqual(result.status, "runtime_error")
+        self.assertEqual(result.error_type, "RecursionError")
+        self.assertEqual(result.line, 1)
+
+    def test_non_terminating_line_finds_loop_header(self) -> None:
+        self.assertEqual(likely_non_terminating_line("python", "value = 0\nwhile True:\n    value += 1\n"), 2)
+
 
 class LogicAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    def test_provider_language_is_removed_from_explanations(self) -> None:
+        cleaned = neutralize_provider_language("Meta found this. As an AI, I think the model should check it. The AI-generated note is short.")
+        self.assertNotIn("meta", cleaned.lower())
+        self.assertNotIn("as an ai", cleaned.lower())
+        self.assertNotIn("ai-generated", cleaned.lower())
+        self.assertNotIn("i think", cleaned.lower())
+
+    async def test_analysis_does_not_expose_provider_name(self) -> None:
+        async def fake_completion(prompt: str) -> str:
+            return json.dumps({
+                "summary": "Meta found a likely issue.",
+                "issues": [{
+                    "category": "Logic", "title": "Meta noticed this", "explanation": "As an AI, I think this is suspicious.",
+                    "fix": "I recommend checking the value.", "line": 1, "severity": "warning"
+                }],
+                "walkthrough": ["I found the likely line."]
+            })
+
+        with patch("app.analysis.meta_completion", fake_completion):
+            result = await meta_analysis(AnalyzeRequest(
+                mode="gemini", code="print('hello')\n", actual_output="hello\n"
+            ))
+        visible_text = json.dumps({
+            "summary": result.summary,
+            "issues": [issue.model_dump() for issue in result.issues],
+            "walkthrough": result.walkthrough,
+        }).lower()
+        self.assertNotIn("meta", visible_text)
+        self.assertNotIn("as an ai", visible_text)
+        self.assertNotIn("i think", visible_text)
+
     async def test_logic_check_still_runs_without_predicted_output(self) -> None:
         async def fake_completion(prompt: str) -> str:
             self.assertIn("always inspect", prompt.lower())
@@ -110,8 +343,151 @@ class LogicAnalysisTests(unittest.IsolatedAsyncioTestCase):
             ))
         self.assertEqual(result.issues, [])
 
+    async def test_timeout_hint_has_a_fallback_line_when_model_returns_none(self) -> None:
+        async def empty_completion(prompt: str) -> str:
+            return json.dumps({"hints": []})
+
+        with patch("app.analysis.meta_completion", empty_completion):
+            result = await meta_hint(HintRequest(
+                language="python",
+                code="while True:\n    pass\n",
+                compiler_error="TimeoutError: Execution exceeded the 1 second limit.",
+            ))
+        self.assertEqual(len(result.hints), 1)
+        self.assertEqual(result.hints[0].line, 1)
+
+    async def test_recursion_hint_has_a_fallback_method_line(self) -> None:
+        async def empty_completion(prompt: str) -> str:
+            return "{}"
+
+        with patch("app.analysis.meta_completion", empty_completion):
+            result = await meta_hint(HintRequest(
+                language="python",
+                code="def recurse():\n    return recurse()\n\nrecurse()\n",
+                compiler_error="RecursionError: maximum recursion depth exceeded",
+            ))
+        self.assertEqual(len(result.hints), 1)
+        self.assertEqual(result.hints[0].line, 1)
+
+    async def test_hint_keeps_the_authoritative_issue_line_when_model_moves_it(self) -> None:
+        prompts = []
+
+        async def wrong_line_completion(prompt: str) -> str:
+            prompts.append(prompt)
+            return json.dumps({"hints": [{"line": 3, "message": "The third line is the problem."}]})
+
+        with patch("app.analysis.meta_completion", wrong_line_completion):
+            result = await meta_hint(HintRequest(
+                language="python",
+                code="value = 1\nprint(value + 'x')\nprint('after')\n",
+                issue_line=2,
+                issue_category="Type",
+                compiler_error="TypeError: unsupported operand types",
+            ))
+        self.assertEqual(len(result.hints), 1)
+        self.assertEqual(result.hints[0].line, 2)
+        self.assertIn("print('after')", prompts[0])
+        self.assertIn("Authoritative issue line: 2", prompts[0])
+        self.assertNotIn("third line", result.hints[0].message)
+
+    async def test_hint_uses_the_runner_diagnostic_line_when_no_line_is_sent(self) -> None:
+        async def wrong_line_completion(prompt: str) -> str:
+            return json.dumps({"hints": [{"line": 1, "message": "The first line is the problem."}]})
+
+        with patch("app.analysis.meta_completion", wrong_line_completion):
+            result = await meta_hint(HintRequest(
+                language="python",
+                code="value = 1\nprint(value + 'x')\n",
+                issue_category="Runtime",
+                compiler_error='File "main.py", line 2, in <module>\nTypeError: bad value',
+            ))
+        self.assertEqual(len(result.hints), 1)
+        self.assertEqual(result.hints[0].line, 2)
+
+    async def test_hint_replaces_explicit_fix_instructions_with_an_explanation(self) -> None:
+        async def directive_completion(prompt: str) -> str:
+            return json.dumps({"hints": [{"line": 2, "message": "Change the value before using it."}]})
+
+        with patch("app.analysis.meta_completion", directive_completion):
+            result = await meta_hint(HintRequest(
+                language="python",
+                code="value = 1\nprint(value + 'x')\n",
+                issue_line=2,
+                issue_category="Type",
+                compiler_error="TypeError: bad value",
+            ))
+        self.assertEqual(result.hints[0].line, 2)
+        self.assertNotIn("change", result.hints[0].message.lower())
+
 
 class GeneratedStrategyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_target_preflight_rejects_partial_method_without_calling_model(self) -> None:
+        from app.routes import testcase_target
+
+        result = await testcase_target(TestTargetRequest(
+            language="python",
+            code="def double(n):\n    return n * 2\n",
+            selection_start_line=1,
+            selection_end_line=1,
+            selection_start_column=1,
+            selection_end_column=14,
+        ))
+        self.assertFalse(result["target_ready"])
+        self.assertNotEqual(result["target_kind"], "function")
+        self.assertIn("whole function", result["message"])
+
+    async def test_target_preflight_accepts_a_complete_cpp_method(self) -> None:
+        from app.routes import testcase_target
+
+        source = "int add(int left, int right) { return left + right; }\n"
+        result = await testcase_target(TestTargetRequest(
+            language="cpp",
+            active_file="main.cpp",
+            code=source,
+            selection_start_line=1,
+            selection_end_line=1,
+            selection_start_column=1,
+            selection_end_column=len(source.rstrip()) + 1,
+        ))
+        self.assertTrue(result["target_ready"])
+        self.assertEqual(result["target_kind"], "function")
+
+    async def test_generation_styles_use_method_contract_and_preconditions(self) -> None:
+        source = "def double(n):\n    return n * 2\n"
+        for style, phrase in (("edge", "Integer.MAX_VALUE"), ("stress", "high-workload"), ("general", "representative normal")):
+            with self.subTest(style=style):
+                async def fake_completion(prompt: str) -> str:
+                    self.assertIn(f"Testing style: {style}.", prompt)
+                    self.assertIn(phrase, prompt)
+                    self.assertIn("Method description (optional): Return twice n", prompt)
+                    self.assertIn("Method preconditions (optional; these define valid inputs, not test cases): n >= 0", prompt)
+                    return json.dumps({"cases": [{"name": "zero", "invocation": "double(0)", "expected_return": "0"}]})
+
+                with patch("app.analysis.meta_completion", fake_completion):
+                    result = await generate_test_cases(GenerateTestCasesRequest(
+                        code=source, count=1, test_style=style,
+                        method_description="Return twice n", preconditions="n >= 0",
+                        selection_start_line=1, selection_end_line=2,
+                        selection_start_column=1, selection_end_column=17,
+                    ))
+                self.assertEqual(result.generated_count, 1)
+                self.assertEqual(result.cases[0].expected_return, "0")
+
+    async def test_uncertain_expected_result_requires_review(self) -> None:
+        async def fake_completion(prompt: str) -> str:
+            return json.dumps({"cases": [{"name": "unknown behavior", "invocation": "mystery(1)", "expected_return": None}]})
+
+        with patch("app.analysis.meta_completion", fake_completion):
+            result = await generate_test_cases(GenerateTestCasesRequest(
+                code="def mystery(n):\n    return n\n", count=1,
+                selection_start_line=1, selection_end_line=2,
+                selection_start_column=1, selection_end_column=13,
+            ))
+        self.assertEqual(result.generated_count, 1)
+        self.assertFalse(result.complete)
+        self.assertIsNone(result.cases[0].expected_return)
+        self.assertIn("ambiguous", result.message)
+
     async def test_python_selection_accepts_last_character_endpoint(self) -> None:
         from app.test_targets import detect_test_target
 
@@ -159,18 +535,63 @@ class GeneratedStrategyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.target_ready)
         self.assertEqual(result.generated_count, 0)
 
-    async def test_selected_main_is_not_a_test_target(self) -> None:
-        async def unavailable_model(prompt: str) -> str:
-            self.fail("A selected main function must not call the model")
+    async def test_selected_main_is_a_test_target(self) -> None:
+        async def fake_completion(prompt: str) -> str:
+            return json.dumps({"strategies": [{"name": "Main call", "cases": [
+                {"name": "default", "invocation": "main()", "expected_return": "2"}
+            ]}]})
 
-        with patch("app.analysis.meta_completion", unavailable_model):
+        with patch("app.analysis.meta_completion", fake_completion):
             result = await generate_test_cases(GenerateTestCasesRequest(
                 code="def main():\n    return 2\n", count=1,
                 selection_start_line=1, selection_end_line=2,
                 selection_start_column=1, selection_end_column=13,
             ))
-        self.assertFalse(result.target_ready)
-        self.assertEqual(result.generated_count, 0)
+        self.assertTrue(result.target_ready)
+        self.assertTrue(result.target_is_main)
+        self.assertEqual(result.target_kind, "function")
+        self.assertEqual(result.generated_count, 1)
+        self.assertIn("main()", result.cases[0].harness_code or "")
+        run = run_code(RunRequest(
+            language="python", active_file="main.py", code="def main():\n    return 2\n",
+            harness_file=result.cases[0].harness_file,
+            harness_code=result.cases[0].harness_code,
+        ))
+        self.assertEqual(run.status, "success")
+        self.assertIn("Office Hours Prep result 1: 2", run.output)
+
+    async def test_selected_java_main_uses_printed_output_without_void_expression(self) -> None:
+        source = (
+            "class Main {\n"
+            "  public static void main(String[] args) { System.out.println(\"hello\"); }\n"
+            "}\n"
+        )
+
+        async def fake_completion(prompt: str) -> str:
+            return json.dumps({"strategies": [{"name": "Entry point", "cases": [
+                {"name": "default", "invocation": "Main.main(new String[]{})", "expected_return": None, "expected_output": "hello\n"}
+            ]}]})
+
+        with patch("app.analysis.meta_completion", fake_completion):
+            result = await generate_test_cases(
+                GenerateTestCasesRequest(
+                    language="java", active_file="Main.java", code=source, count=1,
+                    selection_start_line=2, selection_end_line=2,
+                    selection_start_column=3, selection_end_column=84,
+                )
+            )
+        self.assertTrue(result.target_ready)
+        self.assertTrue(result.target_is_main)
+        self.assertEqual(result.cases[0].expected_output, "hello\n")
+        self.assertNotIn("String.valueOf(Main.main", result.cases[0].harness_code or "")
+        if shutil.which("javac") and shutil.which("java"):
+            run = run_code(RunRequest(
+                language="java", active_file="Main.java", code=source,
+                harness_file=result.cases[0].harness_file,
+                harness_code=result.cases[0].harness_code,
+            ))
+            self.assertEqual(run.status, "success")
+            self.assertEqual(run.output.strip(), "hello")
 
     async def test_python_instance_method_runs_without_main_block(self) -> None:
         source = (

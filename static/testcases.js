@@ -1,3 +1,7 @@
+let targetValidationTimer = null;
+let targetValidationSequence = 0;
+let targetValidationState = {key: '', status: 'unknown'};
+
 function setupSidebar() {
   const removeDuplicateSidebars = () => {
     document.querySelectorAll('body > .brief-panel').forEach(duplicate => duplicate.remove());
@@ -34,6 +38,29 @@ function setupSidebar() {
   const workspaceFilesList = createElement('div', 'workspace-files-list');
   workspaceFilesList.id = 'workspace-files-list';
   workspaceFilesPanel.append(filesHeading, workspaceFilesList);
+  const settingsPanel = createElement('section', 'sidebar-panel settings-panel');
+  settingsPanel.id = 'settings-panel';
+  settingsPanel.setAttribute('role', 'tabpanel');
+  settingsPanel.setAttribute('aria-labelledby', 'settings-tab');
+  settingsPanel.hidden = true;
+  const settingsHeading = createElement('div', 'testcase-heading');
+  settingsHeading.append(createElement('h3', '', 'Settings'));
+  const timeoutField = createElement('label', 'settings-field', 'Time until the program stops');
+  const timeoutSelect = createElement('select', 'settings-select');
+  timeoutSelect.id = 'execution-timeout';
+  timeoutSelect.setAttribute('aria-describedby', 'execution-timeout-help');
+  for (const [value, label] of [['1', '1 second'], ['2', '2 seconds'], ['5', '5 seconds'], ['10', '10 seconds'], ['20', '20 seconds']]) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    timeoutSelect.append(option);
+  }
+  const savedTimeout = Number(savedWorkspace?.settings?.executionTimeout);
+  timeoutSelect.value = [1, 2, 5, 10, 20].includes(savedTimeout) ? String(savedTimeout) : '10';
+  timeoutField.append(timeoutSelect);
+  const timeoutHelp = createElement('span', 'settings-help', 'If the program does not finish in this time, it is stopped. A timeout can point to an infinite loop or work that takes too long.');
+  timeoutHelp.id = 'execution-timeout-help';
+  settingsPanel.append(settingsHeading, timeoutField, timeoutHelp);
 
   const navigation = createElement('div', 'sidebar-tabs');
   navigation.setAttribute('role', 'tablist');
@@ -44,7 +71,7 @@ function setupSidebar() {
   setupTab.setAttribute('role', 'tab');
   setupTab.setAttribute('aria-controls', setupPanel.id);
   setupTab.setAttribute('aria-selected', 'true');
-  const casesTab = createElement('button', 'sidebar-tab', 'Testcases');
+  const casesTab = createElement('button', 'sidebar-tab', 'Test Cases');
   casesTab.type = 'button';
   casesTab.id = 'testcases-tab';
   casesTab.setAttribute('role', 'tab');
@@ -58,23 +85,38 @@ function setupSidebar() {
   workspaceFilesTab.setAttribute('aria-selected', 'false');
   workspaceFilesTab.append(createElement('span', 'sidebar-tab-label', 'Files'));
   workspaceFilesTab.append(createElement('span', 'sidebar-tab-count', '0'));
-  navigation.append(setupTab, casesTab, workspaceFilesTab);
-  sidebar.replaceChildren(navigation, setupPanel, testPanel, workspaceFilesPanel);
+  const settingsTab = createElement('button', 'sidebar-tab', 'Settings');
+  settingsTab.type = 'button';
+  settingsTab.id = 'settings-tab';
+  settingsTab.setAttribute('role', 'tab');
+  settingsTab.setAttribute('aria-controls', settingsPanel.id);
+  settingsTab.setAttribute('aria-selected', 'false');
+  navigation.append(setupTab, casesTab, workspaceFilesTab, settingsTab);
+  sidebar.replaceChildren(navigation, setupPanel, testPanel, workspaceFilesPanel, settingsPanel);
+  setupBriefPanelResizing(sidebar);
 
   function selectPanel(selectedTab) {
     const showCases = selectedTab === casesTab;
     const showFiles = selectedTab === workspaceFilesTab;
-    setupTab.setAttribute('aria-selected', String(!showCases && !showFiles));
+    const showSettings = selectedTab === settingsTab;
     casesTab.setAttribute('aria-selected', String(showCases));
     workspaceFilesTab.setAttribute('aria-selected', String(showFiles));
-    setupPanel.hidden = showCases || showFiles;
+    settingsTab.setAttribute('aria-selected', String(showSettings));
+    setupTab.setAttribute('aria-selected', String(!showCases && !showFiles && !showSettings));
+    setupPanel.hidden = showCases || showFiles || showSettings;
     testPanel.hidden = !showCases;
     workspaceFilesPanel.hidden = !showFiles;
+    settingsPanel.hidden = !showSettings;
   }
 
   setupTab.addEventListener('click', () => selectPanel(setupTab));
   casesTab.addEventListener('click', () => selectPanel(casesTab));
   workspaceFilesTab.addEventListener('click', () => selectPanel(workspaceFilesTab));
+  settingsTab.addEventListener('click', () => selectPanel(settingsTab));
+  timeoutSelect.addEventListener('change', () => {
+    persistWorkspace();
+    markTestCasesOutdated();
+  });
   renderWorkspaceFiles();
 
   const casesHeading = createElement('div', 'testcase-heading');
@@ -89,14 +131,11 @@ function setupSidebar() {
   const clearAllButton = createElement('button', 'clear-testcases', 'Clear tests');
   clearAllButton.type = 'button';
   clearAllButton.addEventListener('click', clearTestCases);
-  const clearAiButton = createElement('button', 'clear-ai-testcases', 'Clear AI tests');
-  clearAiButton.type = 'button';
-  clearAiButton.addEventListener('click', clearAiTestCases);
   const addCustomButton = createElement('button', 'add-custom-test', 'Add your own test');
   addCustomButton.type = 'button';
   addCustomButton.addEventListener('click', addCustomTestCase);
-  caseActions.append(generateCasesButton, addCustomButton, clearAiButton, clearAllButton);
-  const instructions = createElement('p', 'testcase-instructions', 'Highlight a whole function or method (not main). Choose a case count, then generate. Use Run for the full program.');
+  caseActions.append(generateCasesButton, addCustomButton, clearAllButton);
+  const instructions = createElement('p', 'testcase-instructions', 'Highlight one complete function or method. Choose a case count, then generate. Use ▶ Run for a complete program.');
   const countField = createElement('label', 'testcase-count-field');
   countField.textContent = 'How many test cases would you like?';
   const countInput = createElement('input', 'testcase-count-input');
@@ -110,6 +149,34 @@ function setupSidebar() {
   countField.append(countInput);
   const countHelp = createElement('span', 'testcase-count-help', 'Choose 1–20. The default is 5.');
   countHelp.id = 'testcase-count-help';
+  const styleField = createElement('label', 'testcase-generation-field', 'What kind of tests?');
+  const styleSelect = createElement('select', 'testcase-generation-select');
+  styleSelect.id = 'testcase-test-style';
+  for (const [value, label] of [['general', 'General testing'], ['edge', 'Edge cases'], ['stress', 'Stress testing']]) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    styleSelect.append(option);
+  }
+  styleField.append(styleSelect);
+  styleSelect.addEventListener('change', markTestCasesOutdated);
+  const methodContext = createElement('div', 'testcase-method-context');
+  methodContext.id = 'testcase-method-context';
+  methodContext.hidden = true;
+  for (const [id, label, placeholder] of [
+    ['testcase-method-description', 'Method description (optional)', 'What should this method return or do?'],
+    ['testcase-preconditions', 'Preconditions (optional)', 'Which inputs are valid? For example, n must be positive.']
+  ]) {
+    const field = createElement('label', 'testcase-generation-field', label);
+    const input = createElement('textarea', 'testcase-generation-textarea');
+    input.id = id;
+    input.rows = 2;
+    input.maxLength = 5000;
+    input.placeholder = placeholder;
+    input.addEventListener('input', markTestCasesOutdated);
+    field.append(input);
+    methodContext.append(field);
+  }
   const targetSummary = createElement('p', 'testcase-target-summary');
   targetSummary.id = 'testcase-target-summary';
   targetSummary.textContent = 'No method selected yet.';
@@ -122,24 +189,108 @@ function setupSidebar() {
   caseList.setAttribute('aria-label', 'Test cases');
   const caseEditor = createElement('div', 'testcase-editor');
   caseEditor.id = 'testcase-editor';
-  const runCasesButton = createElement('button', 'run-testcases', 'Run with testcases');
+  const runCasesButton = createElement('button', 'run-testcases', 'Run with test cases');
   runCasesButton.type = 'button';
   runCasesButton.disabled = true;
   // Do not pass the browser click event as a test-case ID. Passing it made
   // the run-all path filter out every case and display "No results".
   runCasesButton.addEventListener('click', () => runTestCases());
-  testPanel.append(casesHeading, instructions, countField, countHelp, targetSummary, caseActions, generatorStatus, caseList, caseEditor, runCasesButton);
+  testPanel.append(casesHeading, instructions, countField, countHelp, styleField, methodContext, targetSummary, caseActions, generatorStatus, caseList, caseEditor, runCasesButton);
   document.addEventListener('click', event => {
     if (selectedTestCaseId === null || caseEditor.contains(event.target)) return;
-    if (event.target.closest('.testcase-list-item, .testcase-tools, .testcase-count-field, .testcase-count-help, .testcase-target-summary')) return;
+    if (event.target.closest('.testcase-list-item, .testcase-tools, .testcase-count-field, .testcase-count-help, .testcase-target-summary, .run-testcases, .run-one-testcase')) return;
     selectedTestCaseId = null;
     renderTestCases();
   });
-  codeEditor?.onDidChangeCursorSelection?.(() => {
-    targetSummary.textContent = hasEditorSelection() ? 'Selection ready. Generate tests to check this method.' : 'No method selected yet.';
-  });
+  updateTestGenerationContextVisibility();
   document.querySelector('#intent')?.addEventListener('input', markTestCasesOutdated);
   renderTestCases();
+  scheduleTestTargetValidation(true);
+}
+
+const briefPanelWidthStorageKey = 'office-hours-prep.brief-panel-width.v1';
+const briefPanelMinimumWidth = 280;
+const briefPanelMaximumWidth = 520;
+
+function readBriefPanelWidth() {
+  try {
+    const saved = Number(localStorage.getItem(briefPanelWidthStorageKey));
+    return Number.isFinite(saved) ? saved : 310;
+  } catch {
+    return 310;
+  }
+}
+
+function briefPanelWidthLimit() {
+  const workspace = document.querySelector('#code-workspace');
+  const available = workspace?.getBoundingClientRect().width || window.innerWidth;
+  return Math.min(briefPanelMaximumWidth, Math.max(360, Math.floor(available * 0.48)));
+}
+
+function setBriefPanelWidth(width, {save = true} = {}) {
+  const workspace = document.querySelector('#code-workspace');
+  const handle = document.querySelector('.brief-panel-resize-handle');
+  if (!workspace) return;
+  const maximum = briefPanelWidthLimit();
+  const nextWidth = Math.round(Math.max(briefPanelMinimumWidth, Math.min(maximum, Number(width) || 310)));
+  workspace.style.setProperty('--brief-panel-width', `${nextWidth}px`);
+  if (handle) {
+    handle.setAttribute('aria-valuenow', String(nextWidth));
+    handle.setAttribute('aria-valuemax', String(maximum));
+  }
+  if (save) {
+    try { localStorage.setItem(briefPanelWidthStorageKey, String(nextWidth)); } catch {}
+  }
+}
+
+function setupBriefPanelResizing(sidebar) {
+  if (!sidebar || sidebar.querySelector('.brief-panel-resize-handle')) return;
+  sidebar.classList.add('resizable-brief-panel');
+  const handle = createElement('button', 'brief-panel-resize-handle');
+  handle.type = 'button';
+  handle.setAttribute('aria-label', 'Resize right menu');
+  handle.setAttribute('aria-orientation', 'vertical');
+  handle.setAttribute('aria-valuemin', String(briefPanelMinimumWidth));
+  handle.title = 'Drag to resize the right menu';
+  sidebar.insertBefore(handle, sidebar.firstChild);
+  setBriefPanelWidth(readBriefPanelWidth(), {save: false});
+
+  let resizeState = null;
+  const finishResize = event => {
+    if (!resizeState) return;
+    if (event && handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    resizeState = null;
+    document.body.classList.remove('resizing-brief-panel');
+  };
+  handle.addEventListener('pointerdown', event => {
+    if (window.matchMedia('(max-width: 760px)').matches) return;
+    event.preventDefault();
+    resizeState = {startX: event.clientX, startWidth: sidebar.getBoundingClientRect().width};
+    handle.setPointerCapture?.(event.pointerId);
+    document.body.classList.add('resizing-brief-panel');
+  });
+  handle.addEventListener('pointermove', event => {
+    if (!resizeState) return;
+    // The right edge stays fixed: dragging left makes the menu wider.
+    setBriefPanelWidth(resizeState.startWidth + resizeState.startX - event.clientX);
+  });
+  handle.addEventListener('pointerup', finishResize);
+  handle.addEventListener('pointercancel', finishResize);
+  handle.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = sidebar.getBoundingClientRect().width;
+    const next = event.key === 'ArrowLeft' ? current + 16
+      : event.key === 'ArrowRight' ? current - 16
+        : event.key === 'Home' ? briefPanelMinimumWidth : briefPanelWidthLimit();
+    setBriefPanelWidth(next);
+  });
+  window.addEventListener('resize', () => setBriefPanelWidth(sidebar.getBoundingClientRect().width, {save: false}));
+}
+
+function updateTestGenerationContextVisibility() {
+  const context = document.querySelector('#testcase-method-context');
+  if (context) context.hidden = !hasEditorSelection();
 }
 
 function hasEditorSelection() {
@@ -147,12 +298,127 @@ function hasEditorSelection() {
   return Boolean(selection && !selection.isEmpty());
 }
 
+function testSelectionKey() {
+  const activeFile = files.find(file => file.id === activeFileId && !file.generated);
+  const selection = codeEditor?.getSelection?.();
+  if (!activeFile || !selection || selection.isEmpty()) return '';
+  const version = activeFile.model?.getVersionId?.() || 0;
+  return JSON.stringify({
+    file: activeFile.id,
+    language: currentLanguage,
+    version,
+    startLine: selection.startLineNumber,
+    startColumn: selection.startColumn,
+    endLine: selection.endLineNumber,
+    endColumn: selection.endColumn,
+  });
+}
+
+function updateGenerateTestButtonState() {
+  const button = document.querySelector('.generate-testcases');
+  if (!button) return;
+  const key = testSelectionKey();
+  const ready = Boolean(key && targetValidationState.key === key && targetValidationState.status === 'ready');
+  const checking = Boolean(key && targetValidationState.key === key && targetValidationState.status === 'checking');
+  button.disabled = !ready || button.textContent === 'Generating…';
+  button.title = ready
+    ? 'Generate tests for the complete selected function or method'
+    : checking
+      ? 'Checking whether the selection is a complete function or method'
+      : 'Select one complete function or method first';
+}
+
+function targetValidationPayload() {
+  const activeFile = files.find(file => file.id === activeFileId && !file.generated);
+  const selection = codeEditor?.getSelection?.();
+  if (!activeFile || !selection || selection.isEmpty()) return null;
+  return {
+    language: currentLanguage,
+    active_file: activeFile.name,
+    code: activeFile.model.getValue(),
+    selection_start_line: selection.startLineNumber,
+    selection_end_line: selection.endLineNumber,
+    selection_start_column: selection.startColumn,
+    selection_end_column: selection.endColumn,
+  };
+}
+
+async function validateSelectedTestTarget(sequence, key, payload) {
+  try {
+    const response = await fetch('/api/testcase-target', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await parseApiResponse(response, 'Could not check the selected code.');
+    if (sequence !== targetValidationSequence || key !== testSelectionKey()) return;
+    const kind = data.target_kind || data.kind;
+    const ready = Boolean(data.target_ready) && ['function', 'method'].includes(kind);
+    targetValidationState = {key, status: ready ? 'ready' : 'invalid'};
+    selectedTestTarget = data;
+    renderTestTarget(data);
+    const status = document.querySelector('#testcase-generator-status');
+    if (status) {
+      if (ready) {
+        if (status.textContent.startsWith('Checking the selection')) {
+          status.textContent = '';
+          status.hidden = true;
+        }
+      } else {
+        status.hidden = false;
+        status.textContent = data.message || data.missing_information || data.validation_error || 'Select one complete function or method.';
+      }
+    }
+    updateGenerateTestButtonState();
+  } catch (error) {
+    if (sequence !== targetValidationSequence || key !== testSelectionKey()) return;
+    targetValidationState = {key, status: 'invalid'};
+    selectedTestTarget = null;
+    const status = document.querySelector('#testcase-generator-status');
+    if (status) {
+      status.hidden = false;
+      status.textContent = error.message || 'Could not check the selected code.';
+    }
+    updateGenerateTestButtonState();
+  }
+}
+
+function scheduleTestTargetValidation(immediate = false) {
+  if (targetValidationTimer) window.clearTimeout(targetValidationTimer);
+  targetValidationTimer = null;
+  const sequence = ++targetValidationSequence;
+  const key = testSelectionKey();
+  const payload = targetValidationPayload();
+  if (!key || !payload) {
+    targetValidationState = {key: '', status: 'none'};
+    selectedTestTarget = null;
+    updateGenerateTestButtonState();
+    return;
+  }
+  targetValidationState = {key, status: 'checking'};
+  const status = document.querySelector('#testcase-generator-status');
+  if (status) {
+    status.hidden = false;
+    status.textContent = 'Checking the selection…';
+  }
+  updateGenerateTestButtonState();
+  const run = () => validateSelectedTestTarget(sequence, key, payload);
+  if (immediate) run();
+  else targetValidationTimer = window.setTimeout(run, 160);
+}
+
+window.scheduleTestTargetValidation = scheduleTestTargetValidation;
+
 function captureTestSnapshot() {
   const selection = codeEditor?.getSelection?.();
+  const selected = Boolean(selection && !selection.isEmpty());
   return JSON.stringify({
     language: currentLanguage,
     intent: document.querySelector('#intent')?.value.trim() || '',
-    selection: selection && !selection.isEmpty()
+    testStyle: document.querySelector('#testcase-test-style')?.value || 'general',
+    methodDescription: selected ? document.querySelector('#testcase-method-description')?.value.trim() || '' : '',
+    preconditions: selected ? document.querySelector('#testcase-preconditions')?.value.trim() || '' : '',
+    selection: selected
       ? {startLine: selection.startLineNumber, startColumn: selection.startColumn, endLine: selection.endLineNumber, endColumn: selection.endColumn}
       : null,
     files: allWorkspaceFiles().filter(file => !file.generated).map(file => ({name: file.name, code: file.model.getValue()})),
@@ -187,8 +453,33 @@ function selectedMethodName() {
   if (!selection || selection.isEmpty() || !activeFile) return '';
   const selectedText = activeFile.model.getValueInRange(selection);
   return selectedText.match(/\b(?:def|function|func)\s+([A-Za-z_$][\w$]*)\s*\(/)?.[1]
+    || selectedText.match(/\b(?:const\s+)?(?:static\s+|inline\s+|constexpr\s+|unsigned\s+|signed\s+|long\s+|short\s+|void\s+|bool\s+|char\s+|int\s+|float\s+|double\s+|auto\s+|std::[\w:<>]+\s+)+([A-Za-z_$][\w$]*)\s*\(/)?.[1]
     || selectedText.match(/\b(?:public|private|protected|static|async|final|\s)+[A-Za-z_$][\w$<>\[\]]*\s+([A-Za-z_$][\w$]*)\s*\(/)?.[1]
     || '';
+}
+
+function isVoidReturnType(returnType) {
+  return ['void', 'none'].includes(String(returnType || '').toLowerCase().replace(/\s/g, ''));
+}
+
+function testCaseUsesPrintedOutput(testCase) {
+  return Boolean(testCase?.isMain || selectedTestTarget?.target_is_main
+    || isVoidReturnType(testCase?.returnType || selectedTestTarget?.return_type));
+}
+
+function appendExpectedOutputField(container, testCase) {
+  const outputField = createElement('div', 'testcase-field');
+  outputField.append(createElement('label', '', 'Expected printed output'));
+  const outputInput = createElement('textarea', 'required-output-field');
+  outputInput.placeholder = 'Leave blank if the target should not print.';
+  outputInput.value = testCase.expectedOutput || '';
+  outputInput.addEventListener('input', () => {
+    testCase.expectedOutput = outputInput.value;
+    testCase.expectedOutputProvided = true;
+    markTestCaseEdited(testCase);
+  });
+  outputField.append(outputInput);
+  container.append(outputField);
 }
 
 function buildCustomInvocation(testCase) {
@@ -212,6 +503,16 @@ function markTestCaseEdited(testCase) {
   if (typeof persistWorkspace === 'function') persistWorkspace();
 }
 
+function appendSingleTestAction(container, testCase) {
+  const actions = createElement('div', 'testcase-custom-actions');
+  const runOne = createElement('button', 'run-one-testcase', 'Run this test');
+  runOne.type = 'button';
+  runOne.disabled = document.querySelector('.run-testcases')?.textContent === 'Running tests…';
+  runOne.addEventListener('click', () => runTestCases(testCase.id));
+  actions.append(runOne);
+  container.append(actions);
+}
+
 function renderCustomTestEditor(container, testCase) {
   const help = createElement('p', 'testcase-custom-help', 'Add a name, enter arguments in parameter order, and write the result you expect.');
   container.append(help);
@@ -229,14 +530,16 @@ function renderCustomTestEditor(container, testCase) {
   argsInput.addEventListener('input', () => { testCase.argumentsText = argsInput.value; testCase.invocation = buildCustomInvocation(testCase); markTestCaseEdited(testCase); });
   argsField.append(argsInput); container.append(argsField);
 
-  const returnField = createElement('div', 'testcase-field');
-  const returnLabel = createElement('label', '', `Expected return value${testCase.returnType ? ` · type: ${testCase.returnType}` : ''}`);
-  returnField.append(returnLabel);
-  const returnInput = createElement('input', 'testcase-return');
-  returnInput.type = 'text'; returnInput.placeholder = testCase.returnType ? `Enter a ${testCase.returnType} value` : 'Enter the expected value';
-  returnInput.value = testCase.expectedReturn || '';
-  returnInput.addEventListener('input', () => { testCase.expectedReturn = returnInput.value; testCase.expectedReturnProvided = true; markTestCaseEdited(testCase); });
-  returnField.append(returnInput); container.append(returnField);
+  if (!testCaseUsesPrintedOutput(testCase)) {
+    const returnField = createElement('div', 'testcase-field');
+    const returnLabel = createElement('label', '', `Expected return value${testCase.returnType ? ` · type: ${testCase.returnType}` : ''}`);
+    returnField.append(returnLabel);
+    const returnInput = createElement('input', 'testcase-return');
+    returnInput.type = 'text'; returnInput.placeholder = testCase.returnType ? `Enter a ${testCase.returnType} value` : 'Enter the expected value';
+    returnInput.value = testCase.expectedReturn || '';
+    returnInput.addEventListener('input', () => { testCase.expectedReturn = returnInput.value; testCase.expectedReturnProvided = true; markTestCaseEdited(testCase); });
+    returnField.append(returnInput); container.append(returnField);
+  }
 
   const outputField = createElement('div', 'testcase-field');
   outputField.append(createElement('label', '', 'Expected printed output (optional)'));
@@ -245,10 +548,7 @@ function renderCustomTestEditor(container, testCase) {
   outputInput.addEventListener('input', () => { testCase.expectedOutput = outputInput.value; testCase.expectedOutputProvided = true; markTestCaseEdited(testCase); });
   outputField.append(outputInput); container.append(outputField);
 
-  const actions = createElement('div', 'testcase-custom-actions');
-  const runOne = createElement('button', 'run-one-testcase', 'Run this test');
-  runOne.type = 'button'; runOne.addEventListener('click', () => runTestCases(testCase.id));
-  actions.append(runOne); container.append(actions);
+  appendSingleTestAction(container, testCase);
 }
 
 function addCustomTestCase() {
@@ -256,7 +556,7 @@ function addCustomTestCase() {
     id: nextTestCaseId++, name: 'My test', description: 'A test you entered yourself.', origin: 'custom',
     argumentsText: '', invocation: '', expectedReturn: '', expectedReturnProvided: false,
     expectedOutput: '', expectedOutputProvided: false, returnType: selectedTestTarget?.return_type || '',
-    stdin: '', files: [], expectedFiles: [], harnessFile: '', harnessCode: '', status: 'not-run', result: null,
+    stdin: '', files: [], expectedFiles: [], harnessFile: '', harnessCode: '', isMain: Boolean(selectedTestTarget?.target_is_main), status: 'not-run', result: null,
     snapshot: captureTestSnapshot(), targetKind: selectedTestTarget?.kind || 'invalid', outdated: false
   };
   testCases.push(testCase);
@@ -283,6 +583,7 @@ async function prepareCustomHarness(testCase) {
   testCase.harnessFile = data.harness_file || '';
   testCase.harnessCode = data.harness_code || '';
   testCase.returnType = testCase.returnType || data.return_type || '';
+  testCase.isMain = Boolean(testCase.isMain || data.target_is_main);
   return true;
 }
 
@@ -295,6 +596,7 @@ function renderTestCases() {
   if (count) count.textContent = `${testCases.length} case${testCases.length === 1 ? '' : 's'}`;
   const runButton = document.querySelector('.run-testcases');
   if (runButton) runButton.disabled = testCases.length === 0 || hasOldProgramCases() || runButton.textContent === 'Running tests…';
+  updateGenerateTestButtonState();
   if (hasOldProgramCases()) {
     const message = document.querySelector('#testcase-generator-status');
     if (message) {
@@ -304,11 +606,9 @@ function renderTestCases() {
   }
   const clearAllButton = document.querySelector('.clear-testcases');
   if (clearAllButton) clearAllButton.disabled = testCases.length === 0;
-  const clearAiButton = document.querySelector('.clear-ai-testcases');
-  if (clearAiButton) clearAiButton.disabled = !testCases.some(testCase => testCase.origin === 'ai');
 
   if (testCases.length === 0) {
-    caseList.append(createElement('p', 'testcase-empty', 'No tests yet. Highlight a function or method, then generate tests.'));
+    caseList.append(createElement('p', 'testcase-empty', 'No tests yet. Highlight one complete function or method, then generate tests.'));
   }
 
   testCases.forEach(testCase => {
@@ -379,16 +679,38 @@ function renderTestCases() {
     invocationField.append(invocationInput);
     caseEditor.append(invocationField);
 
-    const returnField = createElement('div', 'testcase-field');
-    returnField.append(createElement('label', '', 'Expected return value'));
-    const returnInput = createElement('input', 'testcase-return');
-    returnInput.type = 'text';
-    returnInput.placeholder = 'What should the function return?';
-    returnInput.value = testCase.expectedReturn || '';
-    returnInput.setAttribute('aria-label', `${testCase.name} expected return value`);
-    returnInput.addEventListener('input', () => { testCase.expectedReturn = returnInput.value; testCase.expectedReturnProvided = true; markTestCaseEdited(testCase); });
-    returnField.append(returnInput);
-    caseEditor.append(returnField);
+    if (testCaseUsesPrintedOutput(testCase)) {
+      appendExpectedOutputField(caseEditor, testCase);
+    } else {
+      const returnField = createElement('div', 'testcase-field');
+      returnField.append(createElement('label', '', 'Expected return value'));
+      const returnInput = createElement('input', 'testcase-return');
+      returnInput.type = 'text';
+      returnInput.placeholder = 'What should the function return?';
+      returnInput.value = testCase.expectedReturn || '';
+      returnInput.setAttribute('aria-label', `${testCase.name} expected return value`);
+      returnInput.addEventListener('input', () => { testCase.expectedReturn = returnInput.value; testCase.expectedReturnProvided = true; markTestCaseEdited(testCase); });
+      returnField.append(returnInput);
+      caseEditor.append(returnField);
+    }
+  }
+
+  if (testCase.origin === 'ai') {
+    const explanation = createElement('div', 'testcase-ai-explanation');
+    const aiNote = testCase.description || 'This test checks a normal, boundary, or relevant edge case for the method.';
+    explanation.append(createElement('strong', '', 'AI note:'));
+    explanation.append(createElement('span', '', ` ${aiNote}`));
+    if (testCase.result) {
+      const outcome = testCase.status === 'passed'
+        ? 'Why it passed: the actual result matched the expected result.'
+        : testCase.status === 'failed'
+          ? 'Why it failed: the actual result did not match the expected result.'
+          : 'Why it did not pass: the code stopped before a usable result was available.';
+      explanation.append(createElement('span', 'testcase-ai-outcome', outcome));
+    }
+    caseEditor.append(explanation);
+    appendSingleTestAction(caseEditor, testCase);
+    return;
   }
 
   const advanced = createElement('details', 'testcase-advanced');
@@ -518,22 +840,12 @@ function renderTestCases() {
     requiredFiles.append(expectedFileCard);
   });
   extraFields.append(requiredFiles);
+  appendSingleTestAction(caseEditor, testCase);
 }
 
 function clearTestCases() {
   testCases.splice(0, testCases.length);
   selectedTestCaseId = null;
-  const status = document.querySelector('#testcase-generator-status');
-  if (status) status.textContent = '';
-  renderTestCases();
-  renderFileTabs();
-}
-
-function clearAiTestCases() {
-  for (let index = testCases.length - 1; index >= 0; index -= 1) {
-    if (testCases[index].origin === 'ai') testCases.splice(index, 1);
-  }
-  if (!testCases.some(testCase => testCase.id === selectedTestCaseId)) selectedTestCaseId = null;
   const status = document.querySelector('#testcase-generator-status');
   if (status) status.textContent = '';
   renderTestCases();
@@ -547,6 +859,7 @@ async function runTestCases(onlyTestCaseId = null) {
     document.querySelector('#testcase-generator-status').textContent = 'These older tests are not for a selected method. Clear them, then generate new tests.';
     return;
   }
+  const selectedBeforeRun = selectedTestCaseId;
   markTestCasesOutdated();
   const runSnapshot = captureTestSnapshot();
   document.body.classList.add('testcase-results-open');
@@ -580,7 +893,8 @@ async function runTestCases(onlyTestCaseId = null) {
     try {
       if (testCase.origin === 'custom') await prepareCustomHarness(testCase);
       const preDeclaredType = testCase.returnType || selectedTestTarget?.return_type || '';
-      const preHasExpectedReturn = testCase.expectedReturnProvided ?? Boolean(String(testCase.expectedReturn ?? '').trim());
+      const outputTarget = testCaseUsesPrintedOutput(testCase);
+      const preHasExpectedReturn = !outputTarget && (testCase.expectedReturnProvided ?? Boolean(String(testCase.expectedReturn ?? '').trim()));
       const preExpectedReturn = parseExpectedReturn(testCase.expectedReturn, null, preDeclaredType, preHasExpectedReturn);
       if (testCase.invocation && preHasExpectedReturn && preExpectedReturn?.type === 'invalid') {
         testCase.status = 'review';
@@ -619,6 +933,7 @@ async function runTestCases(onlyTestCaseId = null) {
           files: requestFiles,
           files_to_check: testCase.expectedFiles.map(file => file.name.trim()).filter(Boolean),
           memory_limit_mb: Number(document.querySelector('#memory-limit').value) || null,
+          timeout_seconds: getExecutionTimeout(),
           intent: document.querySelector('#intent').value.trim(),
           harness_file: testCase.harnessFile || null,
           harness_code: testCase.harnessCode || null
@@ -640,7 +955,7 @@ async function runTestCases(onlyTestCaseId = null) {
       const actualOutput = removeHarnessOutput(rawOutput);
       const declaredReturnType = testCase.returnType || data.return_type || '';
       const actualReturnValue = extractHarnessReturn(rawOutput, declaredReturnType);
-      const hasExpectedReturn = testCase.expectedReturnProvided ?? Boolean(String(testCase.expectedReturn ?? '').trim());
+      const hasExpectedReturn = !outputTarget && (testCase.expectedReturnProvided ?? Boolean(String(testCase.expectedReturn ?? '').trim()));
       const expectedReturnValue = parseExpectedReturn(testCase.expectedReturn, actualReturnValue, declaredReturnType, hasExpectedReturn);
       const actualReturn = actualReturnValue ? formatReturnValue(actualReturnValue) : '';
       const expectedReturnDisplay = expectedReturnValue ? formatReturnValue(expectedReturnValue) : '';
@@ -655,7 +970,7 @@ async function runTestCases(onlyTestCaseId = null) {
       if (hasRequiredOutput) {
         checks.push({name: 'Stdout', status: outputMatches ? 'passed' : 'failed', detail: outputMatches ? 'Matches required output' : 'Does not match required output'});
       }
-      if (testCase.invocation) {
+      if (testCase.invocation && !outputTarget) {
         if (hasExpectedReturn) {
           const returnMatches = data.status === 'success' && actualReturnValue !== null && typedValuesEqual(actualReturnValue, expectedReturnValue);
           const typeWarning = expectedReturnValue?.type === 'invalid' ? 'The expected value does not match the declared return type.' : '';
@@ -734,22 +1049,14 @@ async function runTestCases(onlyTestCaseId = null) {
   const rules = document.querySelector('#constraints').value.trim();
   renderConstraintResults(rules ? [{type: 'review', title: 'Rules to follow', detail: `Review all test results against: ${rules}`}]: []);
   button.disabled = false;
-  button.textContent = 'Run with testcases';
+  button.textContent = 'Run with test cases';
+  selectedTestCaseId = selectedBeforeRun;
+  renderTestCases();
 }
 
 function evaluateTestCaseConstraints(testCase, elapsedMs, data) {
   const checks = [];
   const runSucceeded = data.status === 'success';
-  const timeLimit = Number(document.querySelector('#time-limit').value);
-  if (!timeLimit) {
-    checks.push({name: 'Time', status: 'not-set', detail: 'No time limit selected'});
-  } else {
-    const passed = runSucceeded && elapsedMs <= timeLimit * 1000;
-    checks.push({
-      name: 'Time', status: passed ? 'passed' : 'failed',
-      detail: runSucceeded ? `${Math.round(elapsedMs)} ms / ${timeLimit} s` : 'Program did not complete successfully'
-    });
-  }
 
   const memoryLimit = document.querySelector('#memory-limit').value;
   checks.push(memoryLimit
@@ -786,11 +1093,20 @@ async function generateTestCases() {
     status.textContent = 'Highlight one complete function or method in the editor first.';
     return;
   }
+  const selectionKey = testSelectionKey();
+  if (targetValidationState.key !== selectionKey || targetValidationState.status !== 'ready') {
+    status.hidden = false;
+    status.textContent = targetValidationState.status === 'checking'
+      ? 'Checking the selection before generating tests…'
+      : 'Highlight one complete function or method in the editor first.';
+    scheduleTestTargetValidation(true);
+    return;
+  }
   button.disabled = true;
   button.textContent = 'Generating…';
   const generationSnapshot = captureTestSnapshot();
-  status.textContent = '';
-  status.hidden = true;
+  status.hidden = false;
+  const stopAiProgress = startAiProgress(status, 'Generating test cases');
   try {
     const response = await fetch('/api/testcases', {
       method: 'POST',
@@ -811,12 +1127,14 @@ async function generateTestCases() {
         })),
         intent: document.querySelector('#intent').value.trim(),
         count: requestedCount,
+        test_style: document.querySelector('#testcase-test-style')?.value || 'general',
+        method_description: document.querySelector('#testcase-method-description')?.value.trim() || '',
+        preconditions: document.querySelector('#testcase-preconditions')?.value.trim() || '',
         selection_start_line: selection ? selection.startLineNumber : null,
         selection_end_line: selection ? selection.endLineNumber : null,
         selection_start_column: selection ? selection.startColumn : null,
         selection_end_column: selection ? selection.endColumn : null,
         constraints: [
-          `Time limit: ${document.querySelector('#time-limit').value || 'Not specified'}`,
           `Memory limit: ${document.querySelector('#memory-limit').value || 'Not specified'}`,
           `Other constraints: ${document.querySelector('#constraints').value.trim() || 'None specified'}`
         ].join('\n')
@@ -835,7 +1153,7 @@ async function generateTestCases() {
     const strategyByCase = new Map((data.strategies || []).flatMap(strategy => (strategy.cases || []).map(item => [JSON.stringify(item), {
       name: strategy.name, description: strategy.description, code: strategy.code
     }])));
-    const generated = (data.cases || []).slice(0, requestedCount).map((generatedCase, index) => ({
+  const generated = (data.cases || []).slice(0, requestedCount).map((generatedCase, index) => ({
       id: nextTestCaseId + index,
       name: generatedCase.name || `AI case ${nextTestCaseId + index}`,
       description: generatedCase.description || '',
@@ -848,9 +1166,11 @@ async function generateTestCases() {
         contents: fixture.contents || ''
       })),
       expectedOutput: generatedCase.expected_output || '',
+      expectedOutputProvided: Boolean(data.target_is_main || isVoidReturnType(generatedCase.return_type || data.return_type) || generatedCase.expected_output),
       invocation: generatedCase.invocation || '',
       expectedReturn: generatedCase.expected_return ?? '',
       returnType: generatedCase.return_type || data.return_type || '',
+      isMain: Boolean(data.target_is_main),
       harnessFile: generatedCase.harness_file || data.harness_file || '',
       harnessCode: generatedCase.harness_code || '',
       expectedFiles: [],
@@ -876,6 +1196,7 @@ async function generateTestCases() {
   } catch (error) {
     status.textContent = error.message;
   } finally {
+    stopAiProgress();
     status.hidden = false;
     button.disabled = false;
     button.textContent = 'Generate tests for selection';
@@ -886,8 +1207,10 @@ function renderTestTarget(data) {
   selectedTestTarget = data;
   const summary = document.querySelector('#testcase-target-summary');
   if (!summary) return;
-  const targetName = data.target_kind === 'function' ? 'function' : data.target_kind === 'method' ? 'method' : 'selection';
-  summary.textContent = data.target_ready ? `Testing the selected ${targetName}.` : 'Select one complete non-main function or method.';
+  const targetName = data.target_is_main
+    ? 'main function'
+    : data.target_kind === 'function' ? 'function' : data.target_kind === 'method' ? 'method' : 'selection';
+  summary.textContent = data.target_ready ? `Testing the selected ${targetName}.` : 'Select one complete function or method.';
   if (data.target_banner) summary.textContent += ` ${data.target_banner}`;
   if (data.target_explanation) summary.textContent += ` ${data.target_explanation}`;
 }

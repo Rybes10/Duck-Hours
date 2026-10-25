@@ -1,6 +1,6 @@
 """Request and response models shared by the application services."""
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,7 @@ class RunRequest(BaseModel):
     harness_code: Optional[str] = Field(None, max_length=50000)
     files_to_check: List[str] = Field(default_factory=list, max_length=20)
     memory_limit_mb: Optional[int] = Field(None, ge=1, le=4096)
+    timeout_seconds: int = Field(10, ge=1, le=30)
 
 
 class GeneratedWorkspaceFile(BaseModel):
@@ -61,11 +62,13 @@ class RunResponse(BaseModel):
     error: Optional[str] = None
     error_type: Optional[str] = None
     line: Optional[int] = None
+    error_file: Optional[str] = None
     auto_tested: bool = False
     auto_test_function: Optional[str] = None
     auto_test_cases: List[str] = Field(default_factory=list)
     target_kind: str = "program"
     target_ready: bool = True
+    target_is_main: bool = False
     target_banner: Optional[str] = None
     target_explanation: Optional[str] = None
     error_source: Optional[str] = None
@@ -82,6 +85,10 @@ class HintRequest(BaseModel):
     code: str = Field(..., min_length=1, max_length=50000)
     intent: str = Field("", max_length=5000)
     compiler_error: str = Field("", max_length=5000)
+    # The runner or the completed whole-code check may already know the most
+    # trustworthy source line. The hint service must preserve that location.
+    issue_line: Optional[int] = Field(None, ge=1)
+    issue_category: str = Field("", max_length=60)
 
 
 class Hint(BaseModel):
@@ -132,7 +139,20 @@ class GenerateTestCasesRequest(BaseModel):
     existing_cases: List[GeneratedTestCase] = Field(default_factory=list, max_length=50)
     intent: str = Field("", max_length=5000)
     constraints: str = Field("", max_length=5000)
+    test_style: Literal["edge", "stress", "general"] = "general"
+    method_description: str = Field("", max_length=5000)
+    preconditions: str = Field("", max_length=5000)
     count: int = Field(5, ge=1, le=20)
+    selection_start_line: Optional[int] = Field(None, ge=1)
+    selection_end_line: Optional[int] = Field(None, ge=1)
+    selection_start_column: Optional[int] = Field(None, ge=1)
+    selection_end_column: Optional[int] = Field(None, ge=1)
+
+
+class TestTargetRequest(BaseModel):
+    language: str = Field("python", max_length=30)
+    active_file: str = Field("main.py", min_length=1, max_length=100)
+    code: str = Field(..., min_length=1, max_length=50000)
     selection_start_line: Optional[int] = Field(None, ge=1)
     selection_end_line: Optional[int] = Field(None, ge=1)
     selection_start_column: Optional[int] = Field(None, ge=1)
@@ -156,6 +176,7 @@ class GenerateTestCasesResponse(BaseModel):
     target_kind: str = "program"
     target_label: str = "whole submission"
     target_ready: bool = True
+    target_is_main: bool = False
     target_banner: Optional[str] = None
     target_explanation: Optional[str] = None
     missing_information: Optional[str] = None
@@ -181,6 +202,7 @@ class BuildTestHarnessResponse(BaseModel):
     ready: bool
     message: Optional[str] = None
     target_kind: str = "invalid"
+    target_is_main: bool = False
     return_type: Optional[str] = None
     harness_file: Optional[str] = None
     harness_code: Optional[str] = None

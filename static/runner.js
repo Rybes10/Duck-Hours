@@ -20,6 +20,7 @@ runButton.addEventListener('click', async () => {
       files: allWorkspaceFiles().filter(file => !file.generated).map(file => ({name: file.name, code: file.model.getValue()})),
       stdin: '',
       memory_limit_mb: Number(document.querySelector('#memory-limit').value) || null,
+      timeout_seconds: getExecutionTimeout(),
       intent: getRunIntent()
     })});
     const data = await parseApiResponse(response, 'The code could not be run.');
@@ -47,10 +48,15 @@ runButton.addEventListener('click', async () => {
 function getRunIntent() {
   return [
     `Program purpose: ${document.querySelector('#intent').value.trim() || 'Not specified'}`,
-    `Time limit: ${document.querySelector('#time-limit').value || 'Not specified'}`,
+    `Execution timeout: ${getExecutionTimeout()} seconds`,
     `Memory limit: ${document.querySelector('#memory-limit').value || 'Not specified'}`,
     `Other constraints: ${document.querySelector('#constraints').value.trim() || 'None specified'}`
   ].join('\n');
+}
+
+function getExecutionTimeout() {
+  const value = Number(document.querySelector('#execution-timeout')?.value);
+  return [1, 2, 5, 10, 20].includes(value) ? value : 10;
 }
 
 function setCheckStatus(id, state, message) {
@@ -60,17 +66,6 @@ function setCheckStatus(id, state, message) {
 }
 
 function evaluateRunChecks(elapsedMs, runSucceeded, data = {}) {
-  const timeLimit = Number(document.querySelector('#time-limit').value);
-  if (!timeLimit) {
-    setCheckStatus('check-time', 'idle', 'Not set');
-  } else if (!runSucceeded) {
-    setCheckStatus('check-time', 'review', 'Run failed');
-  } else {
-    const elapsed = Math.round(elapsedMs);
-    const passed = elapsedMs <= timeLimit * 1000;
-    setCheckStatus('check-time', passed ? 'pass' : 'fail', `${passed ? 'Pass' : 'Over'} · ${elapsed} ms`);
-  }
-
   const memoryLimit = document.querySelector('#memory-limit').value;
   const measuredMb = Number.isFinite(data.memory_usage_bytes) ? (data.memory_usage_bytes / (1024 * 1024)).toFixed(1) : null;
   setCheckStatus('check-memory', !memoryLimit ? 'idle' : data.memory_limit_exceeded ? 'fail' : measuredMb ? 'pass' : 'review',
@@ -162,7 +157,7 @@ function automaticTestNote(data) {
   const cases = rawCases.length;
   const caseList = rawCases.map(testCase => `<code>${escapeHtml(testCase)}</code>`).join(', ');
   const caseDescription = caseList ? ` It tried: ${caseList}.` : '';
-  return `<span class="output-note">Office Hours Prep created ${cases || 'some'} automatic test case${cases === 1 ? '' : 's'} for <code>${functionName}</code> and ran them behind the scenes.${caseDescription}</span>`;
+  return `<span class="output-note">Duck Hours created ${cases || 'some'} automatic test case${cases === 1 ? '' : 's'} for <code>${functionName}</code> and ran them behind the scenes.${caseDescription}</span>`;
 }
 
 function targetNotice(data) {
@@ -173,6 +168,21 @@ function targetNotice(data) {
 function harnessPreview(data) {
   if (!data?.harness_code) return '';
   return `<details class="inline-harness-preview"><summary>View the separate test harness</summary><pre>${escapeHtml(data.harness_code)}</pre></details>`;
+}
+
+function activeFileName() {
+  return files.find(file => file.id === activeFileId)?.name || '';
+}
+
+function isDependencyError(data) {
+  return data?.error_source === 'dependency'
+    || (data?.error_file && data.error_file !== activeFileName() && data.error_source !== 'harness');
+}
+
+function dependencyErrorDetails(data, phase) {
+  if (!isDependencyError(data) || !data.error_file) return '';
+  const action = phase === 'compile' ? 'could not be compiled' : 'stopped while the program was running';
+  return `<span class="output-details">The required file <code>${escapeHtml(data.error_file)}</code> ${action}.</span><span class="output-note">Open that file from the Files list to inspect it. Unrelated workspace files were not checked.</span>`;
 }
 
 function showRunResult(data, previousIssue) {
@@ -188,6 +198,14 @@ function showRunResult(data, previousIssue) {
     return;
   }
   if (data.status === 'compile_error') {
+    if (isDependencyError(data)) {
+      activeIssue = rememberIssue({category: 'Compile', line: data.line, message: data.error || data.output || ''});
+      output.className = 'output-box error';
+      output.innerHTML = `${targetNotice(data)}<span class="output-title">A required file has a compile error.</span>${dependencyErrorDetails(data, 'compile')}${errorGuideLink(data.error_type || 'compile')}${issueActions()}`;
+      outputStatus.textContent = 'Open required file';
+      bindIssueActions();
+      return;
+    }
     activeIssue = rememberIssue({category: 'Compile', line: data.line, message: data.error || data.output || ''});
     output.className = 'output-box error';
     output.innerHTML = `${targetNotice(data)}<span class="output-title">The code did not compile.</span><span class="output-note">${escapeHtml(issueProgressMessage(previousIssue, activeIssue))}</span>${automaticTestNote(data)}${harnessPreview(data)}${errorGuideLink(data.error_type || 'compile')}${issueActions()}`;
@@ -196,13 +214,22 @@ function showRunResult(data, previousIssue) {
     return;
   }
   if (data.status === 'harness_error') {
-    activeIssue = null;
+    activeIssue = rememberIssue({category: 'Runtime', line: data.line, message: data.error || data.output || ''});
     output.className = 'output-box error';
-    output.innerHTML = `${targetNotice(data)}<span class="output-title">The generated test harness has an issue.</span><span class="output-details">${escapeHtml(data.error || data.output || 'The wrapper could not be compiled or run.')}</span><span class="output-note">This message is about Office Hours Prep’s temporary wrapper, not a line in your submitted code. Review the generated harness in the Testcases panel and try again.</span>`;
+    output.innerHTML = `${targetNotice(data)}<span class="output-title">The generated test harness has an issue.</span><span class="output-details">${escapeHtml(data.error || data.output || 'The wrapper could not be compiled or run.')}</span><span class="output-note">This message is about Duck Hours’ temporary wrapper, not a line in your submitted code. Review the generated harness in the Test Cases panel and try again.</span>${issueActions()}`;
     outputStatus.textContent = 'Harness needs attention';
+    bindIssueActions();
     return;
   }
   if (data.status === 'runtime_error') {
+    if (isDependencyError(data)) {
+      activeIssue = rememberIssue({category: 'Runtime', line: data.line, message: data.error || data.output || ''});
+      output.className = 'output-box runtime';
+      output.innerHTML = `${targetNotice(data)}<span class="output-title">A required file stopped while running.</span>${dependencyErrorDetails(data, 'runtime')}${errorGuideLink(data.error_type || 'runtime')}${issueActions()}`;
+      outputStatus.textContent = 'Open required file';
+      bindIssueActions();
+      return;
+    }
     if (data.target_kind === 'method' && data.target_banner) {
       activeIssue = null;
       output.className = 'output-box runtime';
@@ -210,10 +237,26 @@ function showRunResult(data, previousIssue) {
       outputStatus.textContent = 'Method testing available';
       return;
     }
-    activeIssue = rememberIssue({category: 'Runtime', line: data.line, message: data.error || data.output || ''});
+    const nonTerminating = ['TimeoutError', 'RecursionError', 'StackOverflowError', 'SystemStackError', 'RangeError'].includes(data.error_type);
+    const nonTerminatingTitle = data.error_type === 'TimeoutError'
+      ? 'The program timed out — a loop may not be stopping.'
+      : 'The program stopped during repeated calls — recursion may not be stopping.';
+    const nonTerminatingExplanation = data.error_type === 'TimeoutError'
+      ? 'Execution reached the time limit while this loop was active. A very large workload can also produce this result.'
+      : 'The same method or function kept calling itself until the runtime stopped it, which indicates that the repeated call did not terminate.';
+    activeIssue = rememberIssue({
+      category: 'Runtime',
+      title: nonTerminating ? nonTerminatingTitle : undefined,
+      explanation: nonTerminating ? nonTerminatingExplanation : undefined,
+      line: data.line,
+      message: data.error || data.output || ''
+    });
     output.className = 'output-box runtime';
-    output.innerHTML = `${targetNotice(data)}<span class="output-title">The program stopped while running.</span><span class="output-note">${escapeHtml(issueProgressMessage(previousIssue, activeIssue))}</span>${automaticTestNote(data)}${harnessPreview(data)}${errorGuideLink(data.error_type || 'runtime')}${issueActions()}`;
-    outputStatus.textContent = 'Hint available';
+    output.innerHTML = `${targetNotice(data)}<span class="output-title">${escapeHtml(nonTerminating ? nonTerminatingTitle : 'The program stopped while running.')}</span><span class="output-details">${escapeHtml(data.error || data.output || '')}</span><span class="output-note">${escapeHtml(issueProgressMessage(previousIssue, activeIssue))}${nonTerminating ? ' The likely problem line is highlighted; press the hint button for a short explanation.' : ''}</span>${automaticTestNote(data)}${harnessPreview(data)}${errorGuideLink(data.error_type || 'runtime')}${issueActions()}`;
+    if (nonTerminating && data.line) {
+      showHints([{line: data.line, message: nonTerminatingExplanation}]);
+    }
+    outputStatus.textContent = nonTerminating ? 'Runtime error · likely non-terminating code' : 'Hint available';
     bindIssueActions();
     return;
   }
@@ -228,7 +271,7 @@ async function checkLogicAfterRun(previousIssue) {
     activeIssue = null;
     if (previousIssue && issueColorClass(previousIssue.category) !== 'logic') {
       output.className = 'output-box success';
-      output.innerHTML = `<span class="output-title">Nice work — the previous issue is fixed</span><span class="output-details">${escapeHtml(lastRun.output || '(The program ran successfully but printed no output.)')}</span><span class="output-note">The earlier ${escapeHtml(previousIssue.category || 'code')} issue is no longer happening. The logic check was skipped for this run.</span>${automaticTestNote(lastRun)}`;
+      output.innerHTML = `<span class="output-title">Nice work — the previous issue is fixed</span><span class="output-details">${escapeHtml(lastRun.output || '(The program ran successfully but printed no output.)')}</span><span class="output-note">The code now runs successfully without the earlier ${escapeHtml(previousIssue.category || 'code')} failure. The result above is the observed output. The logic check was skipped for this run.</span>${automaticTestNote(lastRun)}`;
       outputStatus.textContent = 'Fixed · logic skipped';
     } else {
       outputStatus.textContent = 'Success · logic skipped';
@@ -237,6 +280,7 @@ async function checkLogicAfterRun(previousIssue) {
     return;
   }
   outputStatus.textContent = 'Checking logic…';
+  const stopAiProgress = startAiProgress(outputStatus, 'Checking your code');
   try {
     const response = await fetch('/api/analyze', {
       method: 'POST',
@@ -251,7 +295,7 @@ async function checkLogicAfterRun(previousIssue) {
       })
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Meta could not check the program logic.');
+    if (!response.ok) throw new Error(data.detail || 'The logic check could not finish.');
     const issues = (data.issues || []).filter(issue => issue?.category && issue.category.toLowerCase() !== 'understand');
     if (issues.length) {
       const stillThere = previousIssue && issues.some(issue => sameIssue(previousIssue, issue));
@@ -262,14 +306,22 @@ async function checkLogicAfterRun(previousIssue) {
     activeIssue = null;
     if (previousIssue) {
       output.className = 'output-box success';
-      output.innerHTML = `<span class="output-title">Nice work — issue fixed</span><span class="output-details">${escapeHtml(lastRun.output || '(The program ran successfully but printed no output.)')}</span><span class="output-note">The previous ${escapeHtml(previousIssue.category || 'code')} issue is no longer happening because the program now runs successfully. Meta found no remaining logic issues.</span>${automaticTestNote(lastRun)}`;
+      output.innerHTML = `<span class="output-title">Nice work — issue fixed</span><span class="output-details">${escapeHtml(lastRun.output || '(The program ran successfully but printed no output.)')}</span><span class="output-note">The code now runs successfully without the previous ${escapeHtml(previousIssue.category || 'code')} failure, and the whole-code check found no remaining issue tied to the stated purpose.</span>${automaticTestNote(lastRun)}`;
       outputStatus.textContent = 'Fixed';
     } else {
       outputStatus.textContent = 'Success · logic checked';
     }
   } catch (error) {
-    outputStatus.textContent = 'Success · logic not checked';
-    output.insertAdjacentHTML('beforeend', `<span class="output-note">The code ran successfully, but Meta could not finish the logic check.</span>`);
+    if (previousIssue && issueColorClass(previousIssue.category) !== 'logic') {
+      output.className = 'output-box success';
+      output.innerHTML = `<span class="output-title">Nice work — the previous issue is fixed</span><span class="output-details">${escapeHtml(lastRun.output || '(The program ran successfully but printed no output.)')}</span><span class="output-note">The code now runs successfully without the earlier ${escapeHtml(previousIssue.category || 'code')} failure. The result above is the observed output. A whole-code logic check was unavailable, so this confirms the run behavior only.</span>${automaticTestNote(lastRun)}`;
+      outputStatus.textContent = 'Fixed · logic check unavailable';
+    } else {
+      outputStatus.textContent = 'Success · logic not checked';
+      output.insertAdjacentHTML('beforeend', `<span class="output-note">The code ran successfully, but the whole-code logic check could not finish.</span>`);
+    }
+  } finally {
+    stopAiProgress();
   }
 }
 
@@ -286,7 +338,7 @@ function showLogicIssue(issue, count, rewarded) {
   output.className = 'output-box logic';
   const issueCount = `${count} issue${count === 1 ? '' : 's'} remaining`;
   const title = rewarded ? `Nice work — one issue fixed. ${issueCount}.` : `${issueCount}: next issue`;
-  output.innerHTML = `<span class="output-title">${escapeHtml(title)}</span><span class="output-details">${escapeHtml(issue.title || 'The result may not match the program purpose.')}</span><span class="output-note">Why: ${escapeHtml(issue.explanation || 'This may not match the stated purpose.')} Fix direction: ${escapeHtml(issue.fix || 'Compare the result with the purpose and constraints.')}</span>${errorGuideLink(issue.category || 'logic')}${issueActions()}`;
+  output.innerHTML = `<span class="output-title">${escapeHtml(title)}</span><span class="output-details">${escapeHtml(issue.title || 'The result may not match the program purpose.')}</span><span class="output-note">Why: ${escapeHtml(issue.explanation || 'This may not match the stated purpose.')}</span>${errorGuideLink(issue.category || 'logic')}${issueActions()}`;
   outputStatus.textContent = 'Logic needs attention';
   bindIssueActions();
 }
@@ -301,19 +353,23 @@ async function requestHint() {
   const hintButton = document.querySelector('#hint');
   hintButton.disabled = true;
   hintButton.textContent = 'Getting a hint…';
+  const stopAiProgress = startAiProgress(outputStatus, 'Finding a hint');
   try {
     const response = await fetch('/api/hint', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
       language: currentLanguage,
       code: codeEditor.getValue(),
       intent: document.querySelector('#intent').value,
+      issue_line: activeIssue?.line || lastRun?.line || null,
+      issue_category: activeIssue?.category || '',
       compiler_error: [lastRun.output, lastRun.error, activeIssue?.title, activeIssue?.explanation, activeIssue?.message].filter(Boolean).join('\n')
     })});
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Meta could not provide a hint.');
+    if (!response.ok) throw new Error(data.detail || 'A hint could not be provided.');
     if (!data.hints || data.hints.length === 0) {
       hintButton.disabled = false;
       hintButton.textContent = '? Give me a hint';
-      output.insertAdjacentHTML('beforeend', '<span class="output-note">Meta could not identify a clear line yet.</span>');
+      outputStatus.textContent = 'No clear hint';
+      output.insertAdjacentHTML('beforeend', '<span class="output-note">A clear line could not be identified yet.</span>');
       return;
     }
     const hint = data.hints[0];
@@ -321,16 +377,21 @@ async function requestHint() {
     if (!showHints([hint])) {
       hintButton.disabled = false;
       hintButton.textContent = '? Give me a hint';
-      output.insertAdjacentHTML('beforeend', '<span class="output-note">Meta returned a line that is not in the current code.</span>');
+      outputStatus.textContent = 'Hint available';
+      output.insertAdjacentHTML('beforeend', '<span class="output-note">The hint pointed to a line that is not in the current code.</span>');
       return;
     }
     addFixAction();
     output.insertAdjacentHTML('beforeend', `<span class="output-note">Hint: ${escapeHtml(hint.message)}</span>`);
     hintButton.textContent = 'Hint added to editor';
+    outputStatus.textContent = 'Hint added';
   } catch (error) {
     hintButton.disabled = false;
     hintButton.textContent = '? Give me a hint';
-    output.insertAdjacentHTML('beforeend', '<span class="output-note">Meta could not provide a hint right now.</span>');
+    outputStatus.textContent = 'Hint unavailable';
+    output.insertAdjacentHTML('beforeend', '<span class="output-note">A hint is not available right now.</span>');
+  } finally {
+    stopAiProgress();
   }
 }
 
@@ -341,6 +402,7 @@ async function requestFix() {
   const originalCode = codeEditor.getValue();
   fixButton.disabled = true;
   fixButton.textContent = 'Preparing a fix…';
+  const stopAiProgress = startAiProgress(outputStatus, 'Preparing a suggestion');
   try {
     const issue = activeIssue || {};
     const response = await fetch('/api/fix', {
@@ -355,23 +417,25 @@ async function requestFix() {
       })
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Meta could not prepare a fix.');
-    if (!data.code || !String(data.code).trim()) throw new Error('Meta returned an empty fix.');
+    if (!response.ok) throw new Error(data.detail || 'A fix could not be prepared.');
+    if (!data.code || !String(data.code).trim()) throw new Error('The suggested fix was empty.');
     if (data.code === originalCode) {
       fixButton.disabled = false;
       fixButton.textContent = 'Fix it for me';
-      output.insertAdjacentHTML('beforeend', '<span class="output-note">Meta did not suggest a change. Try another hint.</span>');
+      output.insertAdjacentHTML('beforeend', '<span class="output-note">No change was suggested. Try another hint.</span>');
       return;
     }
     codeEditor.setValue(data.code);
     clearHints();
     output.className = 'output-box success';
-    output.innerHTML = `<span class="output-title">A possible fix is ready.</span><span class="output-details">${escapeHtml(data.explanation || 'Meta changed the code to address the reported issue.')}</span><span class="output-note">Review the change, then press Run to check whether it fixed the issue.</span><button id="fix" class="fix-button" type="button" disabled>Fix applied — press Run</button>`;
+    output.innerHTML = `<span class="output-title">A possible fix is ready.</span><span class="output-details">${escapeHtml(data.explanation || 'The code was changed to address the reported issue.')}</span><span class="output-note">Review the change, then press Run to check whether it fixed the issue.</span><button id="fix" class="fix-button" type="button" disabled>Fix applied — press Run</button>`;
     outputStatus.textContent = 'Review fix';
   } catch (error) {
     fixButton.disabled = false;
     fixButton.textContent = 'Fix it for me';
-    output.insertAdjacentHTML('beforeend', '<span class="output-note">Meta could not prepare a fix right now. You can keep editing or ask for a hint.</span>');
+    output.insertAdjacentHTML('beforeend', '<span class="output-note">A fix is not available right now. You can keep editing or ask for a hint.</span>');
+  } finally {
+    stopAiProgress();
   }
 }
 
@@ -382,16 +446,6 @@ function showHints(hints) {
   hintDecorations = codeEditor.deltaDecorations(hintDecorations, validHints.map(hint => ({
     range: new monaco.Range(hint.line, 1, hint.line, model.getLineMaxColumn(hint.line)),
     options: lineDecorationOptions(model, hint.line, activeIssue?.category, `Hint: ${hint.message}`)
-  })));
-  monaco.editor.setModelMarkers(model, 'office-hours-prep', validHints.map(hint => ({
-    startLineNumber: hint.line,
-    endLineNumber: hint.line,
-    startColumn: 1,
-    endColumn: model.getLineMaxColumn(hint.line),
-    // The custom decoration owns the beginner-friendly hover. Keep the
-    // marker for the underline without opening Monaco's raw diagnostic box.
-    message: '',
-    severity: activeIssue?.category?.toLowerCase() === 'logic' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error
   })));
   codeEditor.revealLineInCenter(validHints[0].line);
   return true;
@@ -430,15 +484,6 @@ function markLine(data, category = 'runtime') {
   hintDecorations = codeEditor.deltaDecorations([], [{
     range: new monaco.Range(data.line, 1, data.line, model.getLineMaxColumn(data.line)),
     options: lineDecorationOptions(model, data.line, category, message)
-  }]);
-  monaco.editor.setModelMarkers(model, 'office-hours-prep', [{
-    startLineNumber: data.line,
-    endLineNumber: data.line,
-    startColumn: 1,
-    endColumn: model.getLineMaxColumn(data.line),
-    // The custom decoration owns the beginner-friendly hover.
-    message: '',
-    severity: data.status === 'compile_error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning
   }]);
   codeEditor.revealLineInCenter(data.line);
 }

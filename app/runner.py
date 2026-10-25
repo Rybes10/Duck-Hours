@@ -24,30 +24,150 @@ def safe_file_name(name: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", name)) and name not in {".", ".."}
 
 
+def _strip_source_comments_and_strings(source: str) -> str:
+    """Keep identifiers while removing common comments and string literals."""
+    return re.sub(
+        r"//[^\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+        " ",
+        source,
+        flags=re.DOTALL,
+    )
+
+
+def _matching_workspace_file(reference: str, available: Dict[str, str], extensions: Sequence[str]) -> Optional[str]:
+    """Find a referenced local file without allowing paths outside the workspace."""
+    candidate = Path(reference).name
+    names = [candidate]
+    if Path(candidate).suffix == "":
+        names.extend(candidate + extension for extension in extensions)
+    for wanted in names:
+        for name in available:
+            if name.casefold() == wanted.casefold():
+                return name
+    return None
+
+
+def _java_declared_types(source: str) -> List[str]:
+    cleaned = _strip_source_comments_and_strings(source)
+    return re.findall(r"\b(?:class|interface|enum|record)\s+([A-Za-z_$][\w$]*)", cleaned)
+
+
+def _required_source_names(language: str, active_name: str, sources: Dict[str, str]) -> List[str]:
+    """Return the active file and local source files it actually references.
+
+    Workspace files are intentionally not treated as one project-wide compile
+    unit.  This prevents an unrelated scratch file from blocking Run while
+    still following simple, language-native local dependencies.
+    """
+    if active_name not in sources:
+        return []
+    required: List[str] = [active_name]
+    queued = [active_name]
+    available = dict(sources)
+
+    while queued:
+        current_name = queued.pop(0)
+        source = sources[current_name]
+        cleaned = _strip_source_comments_and_strings(source)
+        dependencies: List[str] = []
+        if language in {"c", "cpp"}:
+            references = re.findall(r"#\s*include\s*[<\"]([^>\"]+)[>\"]", source)
+            for reference in references:
+                match = _matching_workspace_file(reference, available, (".h", ".hpp", ".c", ".cpp"))
+                if match:
+                    dependencies.append(match)
+        elif language == "typescript":
+            references = re.findall(
+                r"(?:from\s*|import\s*\(?\s*|require\s*\(\s*)[\"'](?:\./)?([^\"']+)[\"']",
+                source,
+            )
+            for reference in references:
+                match = _matching_workspace_file(reference, available, (".ts", ".tsx"))
+                if match:
+                    dependencies.append(match)
+        elif language == "java":
+            imports = re.findall(r"\bimport\s+(?:static\s+)?[\w$.]+\.([A-Za-z_$][\w$]*)\s*;", cleaned)
+            for imported in imports:
+                match = _matching_workspace_file(imported, available, (".java",))
+                if match:
+                    dependencies.append(match)
+            identifiers = set(re.findall(r"\b[A-Za-z_$][\w$]*\b", cleaned))
+            for candidate, candidate_source in available.items():
+                if candidate == current_name or not candidate.endswith(".java"):
+                    continue
+                declared = _java_declared_types(candidate_source)
+                if any(type_name in identifiers for type_name in declared):
+                    dependencies.append(candidate)
+        elif language == "go":
+            declarations: Dict[str, str] = {}
+            for candidate, candidate_source in available.items():
+                if candidate == current_name or not candidate.endswith(".go"):
+                    continue
+                candidate_cleaned = _strip_source_comments_and_strings(candidate_source)
+                for declared in re.findall(
+                    r"\b(?:func|type|var|const)\s+([A-Za-z_][A-Za-z0-9_]*)", candidate_cleaned
+                ):
+                    declarations[declared] = candidate
+            identifiers = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", cleaned))
+            current_declarations = set(
+                re.findall(r"\b(?:func|type|var|const)\s+([A-Za-z_][A-Za-z0-9_]*)", cleaned)
+            )
+            dependencies.extend(
+                candidate for declared, candidate in declarations.items()
+                if declared in identifiers - current_declarations
+            )
+
+        for dependency in dependencies:
+            if dependency not in required:
+                required.append(dependency)
+                queued.append(dependency)
+    return required
+
+
+def _java_main_class(source: str, fallback: str) -> str:
+    class_matches = list(re.finditer(r"\bclass\s+([A-Za-z_$][\w$]*)", source))
+    main_match = re.search(r"\bstatic\s+void\s+main\s*\(", source)
+    if main_match:
+        containing_classes = [match for match in class_matches if match.start() < main_match.start()]
+        class_name = containing_classes[-1].group(1) if containing_classes else fallback
+    else:
+        public_match = re.search(r"\bpublic\s+class\s+([A-Za-z_$][\w$]*)", source)
+        if public_match:
+            class_name = public_match.group(1)
+        else:
+            class_name = class_matches[0].group(1) if class_matches else fallback
+    package_match = re.search(r"\bpackage\s+([A-Za-z_$][\w$.]*)\s*;", source)
+    return f"{package_match.group(1)}.{class_name}" if package_match else class_name
+
+
 def command_for(
     language: str,
     active_path: Path,
     workspace: Path,
     run_path: Optional[Path] = None,
+    source_names: Optional[Sequence[str]] = None,
+    main_class: Optional[str] = None,
 ) -> Tuple[Optional[List[str]], Optional[List[str]]]:
     """Return compile and run commands for the selected source file."""
     execution_path = run_path or active_path
+    source_paths = [workspace / name for name in (source_names or [])]
     if language == "python":
-        compile_paths = [active_path] if run_path is None else [active_path, execution_path]
+        compile_paths = source_paths or ([active_path] if run_path is None else [active_path, execution_path])
         return [sys.executable, "-m", "py_compile", *(str(path) for path in compile_paths)], [sys.executable, str(execution_path)]
     if language == "javascript":
         executable = shutil.which("node")
         if not executable:
             return None, None
-        return [executable, "--check", str(active_path)], [executable, str(execution_path)]
+        compile_path = execution_path if run_path else active_path
+        return [executable, "--check", str(compile_path)], [executable, str(execution_path)]
     if language == "typescript":
         compiler = shutil.which("tsc")
         executable = shutil.which("node")
-        sources = sorted(str(path) for path in workspace.glob("*.ts"))
+        sources = [str(path) for path in source_paths if path.suffix == ".ts"] or [str(active_path)]
         if not compiler or not executable:
             return None, None
         compiled = workspace / (active_path.stem + ".js")
-        return [compiler, "--target", "ES2020", "--module", "commonjs", "--outDir", str(workspace), *sources], [executable, str(compiled)]
+        return [compiler, "--target", "ES2020", "--module", "commonjs", "--noEmitOnError", "--outDir", str(workspace), *sources], [executable, str(compiled)]
     if language == "ruby":
         executable = shutil.which("ruby")
         if not executable:
@@ -55,25 +175,33 @@ def command_for(
         return [executable, "-c", str(active_path)], [executable, str(execution_path)]
     if language == "go":
         executable = shutil.which("go")
-        sources = [str(run_path)] if run_path else sorted(str(path) for path in workspace.glob("*.go"))
+        sources = [str(path) for path in source_paths if path.suffix == ".go"] or ([str(run_path)] if run_path else [str(active_path)])
         if not executable or not sources:
             return None, None
         return None, [executable, "run", *sources]
     if language == "java":
         compiler = shutil.which("javac")
         executable = shutil.which("java")
-        sources = sorted(str(path) for path in workspace.glob("*.java"))
+        sources = [str(path) for path in source_paths if path.suffix == ".java"] or ([str(run_path)] if run_path else [str(active_path)])
         if not compiler or not executable or not sources:
             return None, None
-        return [compiler, "-d", str(workspace), *sources], [executable, "-cp", str(workspace), execution_path.stem]
+        empty_sourcepath = workspace / "__office_hours_empty_sourcepath__"
+        empty_sourcepath.mkdir(exist_ok=True)
+        execution_class = execution_path.stem if run_path else (main_class or execution_path.stem)
+        return [compiler, "-implicit:none", "-sourcepath", str(empty_sourcepath), "-d", str(workspace), *sources], [executable, "-cp", str(workspace), execution_class]
     if language in {"c", "cpp"}:
         compiler = shutil.which("gcc" if language == "c" else "g++")
         extension = ".c" if language == "c" else ".cpp"
-        sources = sorted(str(path) for path in workspace.glob("*" + extension))
+        sources = [str(path) for path in source_paths if path.suffix == extension]
+        if not sources:
+            sources = [str(run_path)] if run_path else [str(active_path)]
         executable = str(workspace / ("program.exe" if os.name == "nt" else "program"))
         if not compiler or not sources:
             return None, None
-        return [compiler, *sources, "-o", executable], [executable]
+        # Workspace headers are written beside the source files.  Adding the
+        # workspace as an include directory lets both quoted and angle-bracket
+        # includes resolve to files the user imported into the workspace.
+        return [compiler, "-I", str(workspace), *sources, "-o", executable], [executable]
     return None, None
 
 
@@ -87,28 +215,31 @@ def execution_environment() -> Dict[str, str]:
     return environment
 
 
-def _limit_child_process() -> None:
+def _limit_child_process(timeout_seconds: int = 10) -> None:
     if os.name != "posix":
         return
     try:
         import resource
 
-        resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+        cpu_limit = max(2, int(timeout_seconds) + 1)
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
         resource.setrlimit(resource.RLIMIT_FSIZE, (5 * 1024 * 1024, 5 * 1024 * 1024))
         resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
     except (ImportError, OSError, ValueError):
-        # The outer ten-second timeout still protects execution on platforms
+        # The outer execution timeout still protects execution on platforms
         # where these optional POSIX limits are unavailable.
         return
 
 
-def invoke(command: Sequence[str], workspace: Path, stdin: str = "") -> subprocess.CompletedProcess:
+def invoke(
+    command: Sequence[str], workspace: Path, stdin: str = "", timeout_seconds: int = 10
+) -> subprocess.CompletedProcess:
     batch_file = os.name == "nt" and Path(command[0]).suffix.lower() in {".bat", ".cmd"}
     return subprocess.run(
         list(command), cwd=str(workspace), input=stdin, capture_output=True,
-        text=True, timeout=10, check=False, shell=batch_file,
+        text=True, timeout=timeout_seconds, check=False, shell=batch_file,
         env=execution_environment(),
-        preexec_fn=_limit_child_process if os.name == "posix" else None,
+        preexec_fn=(lambda: _limit_child_process(timeout_seconds)) if os.name == "posix" else None,
     )
 
 
@@ -135,7 +266,7 @@ def _stop_process_tree(process: subprocess.Popen) -> None:
 
 
 def invoke_with_memory_limit(
-    command: Sequence[str], workspace: Path, stdin: str, memory_limit_mb: int
+    command: Sequence[str], workspace: Path, stdin: str, memory_limit_mb: int, timeout_seconds: int = 10
 ) -> Tuple[subprocess.CompletedProcess, Optional[int], bool]:
     """Measure and cap the submitted process tree without running it in the web server."""
     batch_file = os.name == "nt" and Path(command[0]).suffix.lower() in {".bat", ".cmd"}
@@ -143,7 +274,7 @@ def invoke_with_memory_limit(
         list(command), cwd=str(workspace), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=batch_file,
         env=execution_environment(),
-        preexec_fn=_limit_child_process if os.name == "posix" else None,
+        preexec_fn=(lambda: _limit_child_process(timeout_seconds)) if os.name == "posix" else None,
         start_new_session=os.name == "posix",
     )
     communication: Dict[str, object] = {}
@@ -158,7 +289,7 @@ def invoke_with_memory_limit(
     reader.start()
     peak_bytes: Optional[int] = None
     exceeded = False
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + timeout_seconds
     tracked: Dict[int, psutil.Process] = {}
     try:
         tracked[process.pid] = psutil.Process(process.pid)
@@ -186,7 +317,7 @@ def invoke_with_memory_limit(
         if time.monotonic() >= deadline:
             _stop_process_tree(process)
             reader.join(timeout=2)
-            raise subprocess.TimeoutExpired(command, 10)
+            raise subprocess.TimeoutExpired(command, timeout_seconds)
         reader.join(timeout=0.01)
     reader.join(timeout=2)
     if "error" in communication:
@@ -197,15 +328,41 @@ def invoke_with_memory_limit(
 
 def response_line(text: str, preferred_file: Optional[str] = None) -> Optional[int]:
     if preferred_file:
-        preferred_pattern = r'File "[^"]*' + re.escape(preferred_file) + r'", line (\d+)'
-        preferred_matches = re.findall(preferred_pattern, text)
-        if preferred_matches:
-            return int(preferred_matches[-1])
+        preferred_patterns = (
+            r'File "[^"]*(?:/|\\)' + re.escape(preferred_file) + r'", line (\d+)',
+            r"(?<![A-Za-z0-9_.-])" + re.escape(preferred_file) + r":(\d+)(?::\d+)?",
+            r"\(" + re.escape(preferred_file) + r":(\d+)(?::\d+)?\)",
+        )
+        for pattern in preferred_patterns:
+            preferred_matches = re.findall(pattern, text, flags=re.MULTILINE)
+            if preferred_matches:
+                return int(preferred_matches[-1])
+        # Do not fall back to an arbitrary diagnostic line from another file.
+        return None
     patterns = (r'File ".*?", line (\d+)', r"\.\w+:(\d+):")
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             return int(match.group(1))
+    return None
+
+
+def response_file(
+    text: str,
+    preferred_file: Optional[str] = None,
+    known_files: Sequence[str] = (),
+) -> Optional[str]:
+    """Identify the source file named by a compiler/interpreter diagnostic."""
+    if preferred_file and response_line(text, preferred_file) is not None:
+        return preferred_file
+    for name in sorted(set(known_files), key=len, reverse=True):
+        escaped = re.escape(name)
+        if re.search(r'File "[^"]*(?:/|\\)' + escaped + r'", line \d+', text):
+            return name
+        if re.search(r"(?<![A-Za-z0-9_.-])" + escaped + r":\d+(?::\d+)?", text, flags=re.MULTILINE):
+            return name
+        if re.search(r"\(" + escaped + r":\d+(?::\d+)?\)", text):
+            return name
     return None
 
 
@@ -319,6 +476,63 @@ def response_error_type(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def likely_non_terminating_line(
+    language: str, code: str, error_type: Optional[str] = None
+) -> Optional[int]:
+    """Find a loop header or recursive definition to highlight after a run stops."""
+    lines = code.splitlines()
+    recursive_error = error_type in {"RecursionError", "StackOverflowError", "SystemStackError", "RangeError"}
+
+    if language == "python":
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            recursive_definitions: List[int] = []
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if any(
+                    isinstance(call, ast.Call)
+                    and (
+                        isinstance(call.func, ast.Name) and call.func.id == node.name
+                        or isinstance(call.func, ast.Attribute) and call.func.attr == node.name
+                    )
+                    for call in ast.walk(node)
+                ):
+                    recursive_definitions.append(node.lineno)
+            if recursive_error and recursive_definitions:
+                return recursive_definitions[0]
+            loops = [
+                node for node in ast.walk(tree)
+                if isinstance(node, (ast.While, ast.For, ast.AsyncFor))
+            ]
+            if loops:
+                return loops[0].lineno
+            if recursive_definitions:
+                return recursive_definitions[0]
+
+    if recursive_error or language != "python":
+        definition_pattern = re.compile(
+            r"^\s*(?:(?:public|private|protected|static|final|async|export|inline|virtual)\s+)*"
+            r"(?:[A-Za-z_$][\w$<>\[\], ?]*\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:\{|=>)?"
+        )
+        for number, line in enumerate(lines, 1):
+            match = definition_pattern.search(line)
+            if not match:
+                continue
+            name = match.group(1)
+            if re.search(r"\b{}\s*\(".format(re.escape(name)), "\n".join(lines[number:])):
+                return number
+
+    loop_pattern = re.compile(r"^\s*(?:while|for|until|do)\b", re.IGNORECASE)
+    for number, line in enumerate(lines, 1):
+        if loop_pattern.search(line):
+            return number
+    return next((number for number, line in enumerate(lines, 1) if line.strip()), None)
+
+
 def collect_generated_files(workspace: Path, existing_names: set[str]) -> List[GeneratedWorkspaceFile]:
     generated: List[GeneratedWorkspaceFile] = []
     for path in sorted(workspace.iterdir()):
@@ -395,6 +609,18 @@ def run_code(payload: RunRequest) -> RunResponse:
         # bare method is not reported as a user compile error.
         if payload.language == "java" and target.get("standalone_java"):
             sources.pop(payload.active_file, None)
+    required_source_names = _required_source_names(payload.language, payload.active_file, sources)
+    if harness_file:
+        if payload.language == "python":
+            compile_source_names = [name for name in (required_source_names + [harness_file]) if name in sources]
+        elif payload.language == "java" and not target.get("standalone_java"):
+            compile_source_names = [name for name in (required_source_names + [harness_file]) if name in sources]
+        else:
+            # Other generated wrappers contain the selected code or load it at
+            # runtime.  The wrapper is the only compilation unit needed here.
+            compile_source_names = [harness_file]
+    else:
+        compile_source_names = required_source_names
     auto_fields = {
         "auto_tested": bool(auto_plan or auto_java_call or auto_function_call),
         "auto_test_function": auto_plan[0] if auto_plan else target.get("method_name") if auto_java_call else target.get("function_name") if auto_function_call else None,
@@ -403,6 +629,7 @@ def run_code(payload: RunRequest) -> RunResponse:
     target_fields = {
         "target_kind": target.get("kind", "program"),
         "target_ready": target.get("ready", True),
+        "target_is_main": bool(target.get("is_main")),
         "target_banner": target.get("banner"),
         "target_explanation": target.get("explanation"),
         "harness_file": harness_file,
@@ -416,7 +643,19 @@ def run_code(payload: RunRequest) -> RunResponse:
                 (workspace / name).write_text(source, encoding="utf-8")
             active_path = workspace / payload.active_file
             run_path = workspace / harness_file if harness_file else None
-            compile_command, run_command = command_for(payload.language, active_path, workspace, run_path)
+            main_class = (
+                _java_main_class(payload.code, active_path.stem)
+                if payload.language == "java" and not run_path
+                else None
+            )
+            compile_command, run_command = command_for(
+                payload.language,
+                active_path,
+                workspace,
+                run_path,
+                compile_source_names,
+                main_class,
+            )
             if run_command is None:
                 message = "The required compiler or interpreter is not installed for {}.".format(payload.language)
                 return RunResponse(language=payload.language, status="unavailable", output=message, error=message,
@@ -426,35 +665,65 @@ def run_code(payload: RunRequest) -> RunResponse:
                 if compiled.returncode != 0:
                     detail = (compiled.stderr or compiled.stdout).strip()
                     harness_error = bool(harness_file and harness_file in detail and payload.active_file not in detail)
+                    error_file = response_file(
+                        detail,
+                        harness_file if harness_error else None,
+                        compile_source_names,
+                    )
+                    if error_file == payload.active_file and not harness_error:
+                        # Compilers sometimes print an active-file follow-up
+                        # before the included file's actual diagnostic. Prefer
+                        # the required dependency when it is named anywhere
+                        # in the diagnostic (including an include note).
+                        for candidate in compile_source_names:
+                            if candidate == payload.active_file:
+                                continue
+                            if response_file(detail, candidate, (candidate,)):
+                                error_file = candidate
+                                break
+                    error_source = "harness" if harness_error else (
+                        "dependency" if error_file and error_file != payload.active_file else "user"
+                    )
+                    error_message = (
+                        "The generated test harness could not be compiled."
+                        if harness_error
+                        else f'The required file "{error_file}" could not be compiled.'
+                        if error_source == "dependency" and error_file
+                        else "The current file could not be compiled."
+                    )
                     return RunResponse(
                         language=payload.language,
                         status="harness_error" if harness_error else "compile_error",
                         **auto_fields,
                         **target_fields,
                         output=detail,
-                        error=("The generated test harness could not be compiled." if harness_error else "The source files could not be compiled."),
+                        error=error_message,
                         error_type="HarnessError" if harness_error else response_error_type(detail) or "CompileError",
-                        error_source="harness" if harness_error else "user",
-                        line=response_line(detail, harness_file if harness_error else payload.active_file),
+                        error_source=error_source,
+                        error_file=error_file,
+                        line=response_line(detail, error_file or (harness_file if harness_error else payload.active_file)),
                     )
             existing_names = {path.name for path in workspace.iterdir()}
             memory_usage_bytes: Optional[int] = None
             memory_limit_exceeded = False
             if payload.memory_limit_mb:
                 completed, memory_usage_bytes, memory_limit_exceeded = invoke_with_memory_limit(
-                    run_command, workspace, payload.stdin, payload.memory_limit_mb
+                    run_command, workspace, payload.stdin, payload.memory_limit_mb, payload.timeout_seconds
                 )
             else:
-                completed = invoke(run_command, workspace, payload.stdin)
+                completed = invoke(run_command, workspace, payload.stdin, payload.timeout_seconds)
             generated_files = collect_generated_files(workspace, existing_names)
             workspace_files = collect_workspace_files(workspace, payload.files_to_check)
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="replace")
-        message = "Execution exceeded the 10 second limit."
+        message = "Execution exceeded the {} second limit.".format(payload.timeout_seconds)
         return RunResponse(language=payload.language, status="runtime_error", output=output,
-                           error=message, error_type="TimeoutError", error_source="user", **auto_fields, **target_fields)
+                           error=message, error_type="TimeoutError", error_source="user",
+                           error_file=payload.active_file,
+                           line=likely_non_terminating_line(payload.language, payload.code, "TimeoutError"),
+                           **auto_fields, **target_fields)
     except FileNotFoundError as exc:
         missing = Path(exc.filename).name if exc.filename else "the selected executable"
         message = "Could not start {}. Check that the required tool is installed and available on PATH.".format(missing)
@@ -469,6 +738,7 @@ def run_code(payload: RunRequest) -> RunResponse:
         )
         return RunResponse(language=payload.language, status="runtime_error", output=completed.stdout,
                            error=detail, error_type="MemoryLimitError", error_source="user",
+                           error_file=payload.active_file,
                            generated_files=generated_files, workspace_files=workspace_files,
                            memory_usage_bytes=memory_usage_bytes, memory_limit_exceeded=True,
                            **auto_fields, **target_fields)
@@ -479,11 +749,28 @@ def run_code(payload: RunRequest) -> RunResponse:
                            **auto_fields, **target_fields)
     detail = completed.stderr.strip() or completed.stdout.strip() or "The program exited with a non-zero status."
     harness_error = bool(harness_file and harness_file in detail and payload.active_file not in detail)
-    source_file = harness_file if harness_error else payload.active_file
+    error_file = response_file(detail, harness_file if harness_error else None, list(sources))
+    if not error_file:
+        error_file = harness_file if harness_error else payload.active_file
+    source_file = error_file
+    error_type = "HarnessError" if harness_error else response_error_type(detail) or "RuntimeError"
+    error_source = "harness" if harness_error else (
+        "dependency" if error_file != payload.active_file else "user"
+    )
+    recursive_failure = bool(re.search(
+        r"\b(?:RecursionError|StackOverflowError|SystemStackError|RangeError|maximum recursion|maximum call stack|stack overflow)\b",
+        detail,
+        re.IGNORECASE,
+    ))
+    if not harness_error and recursive_failure and error_type == "RuntimeError":
+        error_type = "StackOverflowError"
+    line = response_line(detail, source_file)
+    if not harness_error and recursive_failure:
+        line = likely_non_terminating_line(payload.language, payload.code, error_type)
     return RunResponse(language=payload.language, status="runtime_error", output=completed.stdout,
                        error=("The generated test harness failed." if harness_error else detail),
-                       error_type="HarnessError" if harness_error else response_error_type(detail) or "RuntimeError",
-                       error_source="harness" if harness_error else "user",
-                       line=response_line(detail, source_file), generated_files=generated_files,
+                       error_type=error_type,
+                       error_source=error_source, error_file=error_file,
+                       line=line, generated_files=generated_files,
                        workspace_files=workspace_files, memory_usage_bytes=memory_usage_bytes,
                        **auto_fields, **target_fields)

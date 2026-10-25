@@ -7,14 +7,14 @@ const output = document.querySelector('#output');
 const outputStatus = document.querySelector('#output-status');
 const languageSelect = document.querySelector('#language');
 const examples = {
-  python: `def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("Office Hours"))`,
-  javascript: `function greet(name) {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Office Hours"));`,
-  typescript: `function greet(name: string): string {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Office Hours"));`,
-  ruby: `def greet(name)\n  "Hello, #{name}!"\nend\n\nputs greet("Office Hours")`,
-  go: `package main\n\nimport "fmt"\n\nfunc main() {\n  fmt.Println("Hello, Office Hours")\n}`,
-  java: `class Main {\n  public static void main(String[] args) {\n    System.out.println("Hello, Office Hours");\n  }\n}`,
-  c: `#include <stdio.h>\n\nint main(void) {\n  printf("Hello, Office Hours\\n");\n  return 0;\n}`,
-  cpp: `#include <iostream>\n\nint main() {\n  std::cout << "Hello, Office Hours\\n";\n  return 0;\n}`
+  python: `def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("Duck Hours"))`,
+  javascript: `function greet(name) {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Duck Hours"));`,
+  typescript: `function greet(name: string): string {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Duck Hours"));`,
+  ruby: `def greet(name)\n  "Hello, #{name}!"\nend\n\nputs greet("Duck Hours")`,
+  go: `package main\n\nimport "fmt"\n\nfunc main() {\n  fmt.Println("Hello, Duck Hours")\n}`,
+  java: `class main {\n  public static void main(String[] args) {\n    System.out.println("Hello, Duck Hours");\n  }\n}`,
+  c: `#include <stdio.h>\n\nint main(void) {\n  printf("Hello, Duck Hours\\n");\n  return 0;\n}`,
+  cpp: `#include <iostream>\n\nint main() {\n  std::cout << "Hello, Duck Hours\\n";\n  return 0;\n}`
 };
 
 require(['vs/editor/editor.main'], () => {
@@ -113,11 +113,11 @@ async function requestHint() {
       line: lastRun.line || null
     })});
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Gemini could not provide a hint.');
+    if (!response.ok) throw new Error(data.detail || 'A hint could not be provided.');
     if (!data.hints || data.hints.length === 0) {
       hintButton.disabled = false;
       hintButton.textContent = '? Give me a hint';
-      output.insertAdjacentHTML('beforeend', '<span class="output-note">Gemini could not identify a clear line yet.</span>');
+      output.insertAdjacentHTML('beforeend', '<span class="output-note">A clear line could not be identified yet.</span>');
       return;
     }
     showHints(data.hints);
@@ -125,7 +125,7 @@ async function requestHint() {
   } catch (error) {
     hintButton.disabled = false;
     hintButton.textContent = '? Give me a hint';
-    output.insertAdjacentHTML('beforeend', '<span class="output-note">Gemini could not provide a hint right now.</span>');
+    output.insertAdjacentHTML('beforeend', '<span class="output-note">A hint is not available right now.</span>');
   }
 }
 
@@ -139,14 +139,6 @@ function showHints(hints) {
       glyphMarginClassName: 'hint-glyph',
       glyphMarginHoverMessage: {value: `**Hint:** ${hint.message}`}
     }
-  })));
-  monaco.editor.setModelMarkers(model, 'office-hours-prep', hints.map(hint => ({
-    startLineNumber: hint.line,
-    endLineNumber: hint.line,
-    startColumn: 1,
-    endColumn: model.getLineMaxColumn(hint.line),
-    message: '',
-    severity: monaco.MarkerSeverity.Hint
   })));
   codeEditor.revealLineInCenter(hints[0].line);
 }

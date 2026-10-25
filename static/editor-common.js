@@ -49,7 +49,6 @@ document.querySelector('#intro .intro-grid div:nth-child(3) strong').textContent
 document.querySelector('#intro .intro-grid div:nth-child(3) span').textContent = 'Ask for a hint only when you want one.';
 document.querySelector('#brief-heading').textContent = 'About your program';
 document.querySelector('.brief-panel>p').textContent = 'Tell us what your program should do and what rules it needs to follow.';
-document.querySelector('label[for="time-limit"]').textContent = 'Time';
 document.querySelector('label[for="memory-limit"]').textContent = 'Memory';
 document.querySelector('label[for="constraints"]').textContent = 'Rules to follow';
 document.querySelector('#constraints').placeholder = 'For example: the list may be empty.';
@@ -68,14 +67,14 @@ importInput.addEventListener('change', async () => {
   importInput.value = '';
 });
 const examples = {
-  python: `def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("Office Hours"))`,
-  javascript: `function greet(name) {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Office Hours"));`,
-  typescript: `function greet(name: string): string {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Office Hours"));`,
-  ruby: `def greet(name)\n  "Hello, #{name}!"\nend\n\nputs greet("Office Hours")`,
-  go: `package main\n\nimport "fmt"\n\nfunc main() {\n  fmt.Println("Hello, Office Hours")\n}`,
-  java: `class Main {\n  public static void main(String[] args) {\n    System.out.println("Hello, Office Hours");\n  }\n}`,
-  c: `#include <stdio.h>\n\nint main(void) {\n  printf("Hello, Office Hours\\n");\n  return 0;\n}`,
-  cpp: `#include <iostream>\n\nint main() {\n  std::cout << "Hello, Office Hours\\n";\n  return 0;\n}`
+  python: `def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("Duck Hours"))`,
+  javascript: `function greet(name) {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Duck Hours"));`,
+  typescript: `function greet(name: string): string {\n  return \`Hello, ${'${name}'}!\`;\n}\n\nconsole.log(greet("Duck Hours"));`,
+  ruby: `def greet(name)\n  "Hello, #{name}!"\nend\n\nputs greet("Duck Hours")`,
+  go: `package main\n\nimport "fmt"\n\nfunc main() {\n  fmt.Println("Hello, Duck Hours")\n}`,
+  java: `class main {\n  public static void main(String[] args) {\n    System.out.println("Hello, Duck Hours");\n  }\n}`,
+  c: `#include <stdio.h>\n\nint main(void) {\n  printf("Hello, Duck Hours\\n");\n  return 0;\n}`,
+  cpp: `#include <iostream>\n\nint main() {\n  std::cout << "Hello, Duck Hours\\n";\n  return 0;\n}`
 };
 
 function createElement(tagName, className, text) {
@@ -87,6 +86,18 @@ function createElement(tagName, className, text) {
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+}
+
+function startAiProgress(element, label) {
+  if (!element) return () => {};
+  const startedAt = performance.now();
+  const update = () => {
+    const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
+    element.textContent = `${label} · ${elapsed}s`;
+  };
+  update();
+  const timer = window.setInterval(update, 100);
+  return () => window.clearInterval(timer);
 }
 
 async function parseApiResponse(response, fallbackMessage) {

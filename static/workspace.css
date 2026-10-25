@@ -155,7 +155,7 @@ main{padding:12px 20px}
     .output-heading{margin:8px 10px 5px}
     .output-box{width:calc(100% - 20px);margin:0 10px 10px}
     .brief-panel .limit-grid{display:grid}
-    .brief-panel #time-limit,.brief-panel #memory-limit,.brief-panel #constraints{display:block}
+    .brief-panel #memory-limit,.brief-panel #constraints{display:block}
 
 .brief-panel{display:flex;flex-direction:column;gap:14px}
     body > .brief-panel{display:none!important}
@@ -319,6 +319,8 @@ body.testcase-results-open{height:auto;min-height:100dvh;overflow-x:hidden;overf
 .workspace-file-open,.workspace-file-delete{padding:5px 7px;border:1px solid #c8ced4;background:#fff;color:#394653;font-size:10px}
 .workspace-file-delete{color:#963b34}
 .workspace-file-rename{min-width:0;width:100%;padding:4px;border:1px solid #314b68;font-size:11px}
+.file-tab-rename{flex:1;min-width:72px;width:120px;height:28px;margin:0 5px;padding:4px 6px;border:1px solid #8fa7b9;border-radius:3px;background:#f7fafc;color:#1e2d39;font:12px ui-monospace,SFMono-Regular,monospace;outline:2px solid #314b6830}
+.file-tab-rename[aria-invalid="true"],.workspace-file-rename[aria-invalid="true"]{border-color:#b54740;outline-color:#b5474030}
 .file-tab-item[data-has-output-check="true"]{box-shadow:inset 0 -3px #62b8d5}
 .sidebar-tab{flex:1;min-width:0;padding:0 8px;font-size:11px}
 .testcase-generation-strategy{margin:0 0 10px;padding:8px;border:1px solid #d4dce3;background:#f1f4f6;font-size:11px}
@@ -348,14 +350,17 @@ body.testcase-results-open{height:auto;min-height:100dvh;overflow-x:hidden;overf
 .testcase-panel .testcase-count-field{margin:0 0 4px;font-size:12px}
 .testcase-panel .testcase-count-input{width:68px;height:34px;border-radius:6px;text-align:center;font-size:13px}
 .testcase-panel .testcase-count-help{margin-bottom:13px;font-size:11px}
+.testcase-generation-field{display:grid;gap:5px;margin:0 0 11px;color:#394653;font:600 12px ui-sans-serif,system-ui}
+.testcase-generation-select,.testcase-generation-textarea{box-sizing:border-box;width:100%;min-width:0;padding:8px;border:1px solid #c8ced4;border-radius:6px;background:#fff;color:#233c52;font:12px/1.4 ui-sans-serif,system-ui}
+.testcase-generation-select{height:36px}
+.testcase-generation-textarea{min-height:62px;resize:vertical}
+.testcase-method-context[hidden]{display:none}
 .testcase-panel .testcase-target-summary{margin-bottom:10px;padding:8px 10px;border-left:3px solid #587e9d;border-radius:4px;background:#f0f5f8;color:#31546d;font-size:11px}
 .testcase-panel .testcase-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
 .testcase-panel .testcase-tools{margin:0 0 10px}
 .testcase-panel .testcase-tools button{min-height:36px;padding:0 10px;border-radius:6px;font-size:11px}
 .testcase-panel .testcase-tools .clear-testcases{border-color:#d8dde1;background:#fff;color:#66727d}
-.testcase-panel .testcase-tools .clear-ai-testcases{border-color:#d8dde1;background:#fff;color:#66727d}
 .testcase-panel .testcase-tools .clear-testcases:hover:not(:disabled){background:#f2f4f5}
-.testcase-panel .testcase-tools .clear-ai-testcases:hover:not(:disabled){background:#f2f4f5}
 .testcase-panel .testcase-list,.testcase-panel .testcase-editor{border-radius:6px;overflow:hidden}
 .testcase-panel .run-testcases{min-height:38px;border-radius:6px}
 .testcase-advanced{margin-top:12px;border-top:1px solid #d9e0e5;padding-top:10px}
@@ -406,28 +411,282 @@ body.workspace-open .brief-field textarea{max-height:none;overflow-y:hidden}
 }
 
 /* Test cases stay usable while the editor and run controls remain visible. */
-.testcase-panel{display:flex;min-height:0;flex-direction:column;overflow:hidden}
-.testcase-panel .testcase-list{flex:0 1 auto;max-height:clamp(140px,32vh,280px);min-height:70px;overflow:auto;overscroll-behavior:contain}
-.testcase-panel .testcase-editor{max-height:min(42vh,360px);overflow:auto;overscroll-behavior:contain}
+#code-workspace{
+  --brief-panel-width:310px;
+  grid-template-columns:minmax(480px,1fr) var(--brief-panel-width);
+  overflow-x:auto;
+  overflow-y:hidden;
+  scrollbar-gutter:stable;
+}
+#code-workspace>.editor-card{min-width:480px}
+body.workspace-open .brief-panel.resizable-brief-panel{
+  position:relative;
+  z-index:2;
+  min-width:0;
+  min-height:0;
+  height:100%;
+  box-sizing:border-box;
+  overflow-x:hidden;
+  overflow-y:auto;
+  background:var(--paper);
+  box-shadow:-8px 0 12px -14px #182431;
+}
+body.workspace-open .brief-panel.resizable-brief-panel > .sidebar-panel:not([hidden]){
+  flex:0 0 auto;
+  min-height:0;
+}
+.brief-panel-resize-handle{
+  position:absolute;
+  top:0;
+  bottom:0;
+  left:-8px;
+  z-index:4;
+  width:16px;
+  min-width:16px;
+  margin:0;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  color:transparent;
+  cursor:col-resize;
+  touch-action:none;
+}
+.brief-panel-resize-handle::after{
+  position:absolute;
+  top:50%;
+  left:6px;
+  width:3px;
+  height:42px;
+  border-radius:3px;
+  background:#b9c2ca;
+  content:"";
+  transform:translateY(-50%);
+  transition:height .15s ease,background .15s ease;
+}
+.brief-panel-resize-handle:hover::after,
+.brief-panel-resize-handle:focus-visible::after{
+  height:68px;
+  background:var(--blue);
+}
+.brief-panel-resize-handle:focus-visible{outline:2px solid #314b6855;outline-offset:-1px}
+body.resizing-brief-panel,
+body.resizing-brief-panel *{cursor:col-resize!important;user-select:none!important}
+.testcase-panel{display:flex;min-height:0;flex-direction:column;overflow:visible}
+.testcase-panel .testcase-list{flex:0 0 auto;max-height:clamp(220px,40vh,360px);min-height:120px;overflow:auto;overscroll-behavior:contain}
+.testcase-panel .testcase-editor:not([hidden]){flex:0 0 auto;min-height:260px;max-height:min(60vh,520px);overflow:auto;overscroll-behavior:contain}
 .testcase-panel .run-testcases{flex:none}
 .testcase-tools{flex-wrap:wrap}
-.testcase-panel .testcase-tools{grid-template-columns:minmax(0,1fr) auto auto auto}
+.testcase-panel .testcase-tools{grid-template-columns:minmax(0,1fr) auto}
 .testcase-panel .testcase-tools .generate-testcases{grid-column:1 / -1}
-.testcase-panel .testcase-tools .clear-ai-testcases,.testcase-panel .testcase-tools .clear-testcases{min-width:0;padding-left:8px;padding-right:8px}
+.testcase-panel .testcase-tools .clear-testcases{min-width:0;padding-left:10px;padding-right:10px}
 .testcase-tools .add-custom-test{border-color:#587e9d;background:#eaf1f5;color:#315572}
 .testcase-tools .add-custom-test:hover:not(:disabled){background:#dce8ef}
 .testcase-origin.custom{border-color:#d1ae73;background:#fff4df;color:#7a5b19}
 .testcase-editor[hidden]{display:none!important}
+.testcase-ai-explanation{display:grid;gap:6px;margin-top:12px;padding:10px 11px;border-left:3px solid #587e9d;border-radius:4px;background:#f0f5f8;color:#365066;font:11px/1.45 ui-sans-serif,system-ui}
+.testcase-ai-explanation strong{font-weight:800}
+.testcase-ai-outcome{color:#59636d}
 .testcase-custom-help{margin:0 0 12px;color:#59636d;font-size:11px;line-height:1.45}
+.settings-panel{padding:14px!important}
+.settings-panel .testcase-heading{margin-bottom:14px}
+.settings-field{display:grid;gap:7px;color:#394653;font:700 12px/1.3 ui-sans-serif,system-ui}
+.settings-select{width:100%;min-height:36px;padding:8px 10px;border:1px solid #c8ced4;border-radius:4px;background:#fff;color:var(--ink);font:12px ui-sans-serif,system-ui}
+.settings-help{display:block;margin-top:9px;color:#59636d;font:11px/1.45 ui-sans-serif,system-ui}
 .testcase-text{width:100%;height:34px;padding:8px;border:1px solid #c8ced4;border-radius:2px;background:#fff;color:var(--ink);font:12px ui-sans-serif,system-ui}
 .testcase-custom-actions{display:flex;justify-content:flex-end;margin-top:12px}
 .run-one-testcase{padding:8px 12px;background:#314b68;color:#fff;font:700 11px ui-sans-serif,system-ui}
 .run-one-testcase:hover{background:#263d56}
 @media(max-width:760px){
+  #code-workspace{grid-template-columns:minmax(0,1fr);overflow-x:visible}
+  #code-workspace>.editor-card{min-width:0}
+  .brief-panel-resize-handle{display:none}
+  body.workspace-open .brief-panel.resizable-brief-panel{height:calc(100dvh - 24px);max-height:calc(100dvh - 24px);overflow-x:hidden;overflow-y:auto}
   .testcase-panel{overflow:visible}
-  .testcase-panel .testcase-list{max-height:34vh}
-  .testcase-panel .testcase-editor{max-height:none;overflow:visible}
+  .testcase-panel .testcase-list{max-height:300px;min-height:140px}
+  .testcase-panel .testcase-editor:not([hidden]){max-height:none;overflow:visible}
   .testcase-panel .testcase-tools{display:grid;grid-template-columns:1fr;gap:7px}
   .testcase-panel .testcase-tools .generate-testcases{grid-column:auto}
   .testcase-panel .testcase-tools button{width:100%}
+}
+
+/* Keep the editor column and each visible right-side section independently scrollable. */
+body.workspace-open #code-workspace{
+  overflow-x:auto;
+  overflow-y:hidden;
+}
+body.workspace-open #code-workspace>.editor-card{
+  min-height:0;
+  padding-right:16px;
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+  scrollbar-width:thin;
+  scrollbar-color:#b8c1c9 transparent;
+}
+body.workspace-open #code-workspace>.editor-card::-webkit-scrollbar{width:10px}
+body.workspace-open #code-workspace>.editor-card::-webkit-scrollbar-track{background:transparent}
+body.workspace-open #code-workspace>.editor-card::-webkit-scrollbar-thumb{border:3px solid var(--paper);border-radius:10px;background:#b8c1c9}
+body.workspace-open #code-workspace>.editor-card::-webkit-scrollbar-thumb:hover{background:#8998a5}
+body.workspace-open .brief-panel.resizable-brief-panel{
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+body.workspace-open .brief-panel.resizable-brief-panel>.sidebar-tabs{
+  flex:0 0 auto;
+}
+body.workspace-open .brief-panel.resizable-brief-panel>.sidebar-panel:not([hidden]){
+  flex:1 1 auto;
+  min-height:0;
+  max-height:none;
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+
+/* The grip sits below Monaco. Dragging it changes only the code window height. */
+.editor-vertical-resize-handle{
+  flex:0 0 14px;
+  width:100%;
+  min-height:14px;
+  margin:0;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  color:transparent;
+  cursor:ns-resize;
+  touch-action:none;
+}
+.editor-vertical-resize-handle::after{
+  display:block;
+  width:52px;
+  height:3px;
+  margin:5px auto 0;
+  border-radius:3px;
+  background:#b9c2ca;
+  content:"";
+  transition:width .15s ease,background .15s ease;
+}
+.editor-vertical-resize-handle:hover::after,
+.editor-vertical-resize-handle:focus-visible::after{
+  width:86px;
+  background:var(--blue);
+}
+.editor-vertical-resize-handle:focus-visible{outline:2px solid #314b6855;outline-offset:-1px}
+body.resizing-code-window,
+body.resizing-code-window *{cursor:ns-resize!important;user-select:none!important}
+#code-workspace>.editor-card.editor-height-resized .monaco-editor{
+  flex:0 0 var(--code-editor-height);
+  height:var(--code-editor-height)!important;
+  min-height:0;
+}
+@media(max-width:760px){
+  body.workspace-open #code-workspace>.editor-card{overflow-y:auto}
+  body.workspace-open .brief-panel.resizable-brief-panel{overflow:hidden}
+}
+
+/* Keep the language control visually connected to its toolbar. */
+.editor-toolbar select{
+  appearance:none;
+  -webkit-appearance:none;
+  min-height:36px;
+  margin:0;
+  padding:0 30px 0 10px;
+  border-radius:0!important;
+  background-color:#2b3540;
+  background-image:
+    linear-gradient(45deg,transparent 50%,#c4ccd3 50%),
+    linear-gradient(135deg,#c4ccd3 50%,transparent 50%);
+  background-position:calc(100% - 14px) 15px,calc(100% - 9px) 15px;
+  background-repeat:no-repeat;
+  background-size:5px 5px,5px 5px;
+}
+.editor-toolbar select:focus{outline:2px solid #314b6840;outline-offset:0}
+
+/* Keep the question-mark explanation above the editor edge on the first line. */
+.monaco-hover{
+  z-index:1000;
+  max-width:min(380px,calc(100vw - 24px));
+  max-height:calc(100vh - 24px);
+  overflow:auto;
+}
+
+/* Output grows with its content; the editor column remains the scroll area. */
+body.workspace-open #code-workspace>.editor-card .output-box{
+  flex:0 0 auto;
+  min-height:96px;
+  max-height:none!important;
+  height:auto;
+  overflow:visible!important;
+}
+
+/* Keep the workspace on one predictable vertical scroll path.  The old
+   viewport-sized editor and sidebar each captured the wheel, which made it
+   difficult to reach controls below them.  The document now grows with the
+   visible content; Monaco and the test-case list still scroll internally
+   when their own content is longer than their boxes. */
+body.workspace-open{
+  height:auto;
+  min-height:100dvh;
+  overflow-x:auto;
+  overflow-y:auto;
+}
+body.workspace-open main{
+  flex:0 0 auto;
+  height:auto;
+  min-height:0;
+}
+body.workspace-open #workspace{
+  height:auto;
+  min-height:0;
+}
+body.workspace-open #code-workspace{
+  height:auto;
+  min-height:calc(100dvh - 100px);
+  align-items:start;
+  overflow:visible;
+  overscroll-behavior:auto;
+}
+body.workspace-open #code-workspace>.editor-card{
+  height:auto;
+  min-height:calc(100dvh - 100px);
+  align-self:start;
+  overflow:visible;
+  overscroll-behavior:auto;
+}
+body.workspace-open .brief-panel.resizable-brief-panel{
+  height:auto;
+  max-height:none;
+  align-self:start;
+  overflow:visible;
+  overscroll-behavior:auto;
+}
+body.workspace-open .brief-panel.resizable-brief-panel>.sidebar-panel:not([hidden]){
+  flex:0 0 auto;
+  max-height:none;
+  overflow:visible;
+  overscroll-behavior:auto;
+}
+
+@media(max-width:760px){
+  body.workspace-open main{padding-bottom:40px}
+  body.workspace-open #code-workspace{
+    min-height:0;
+    grid-template-rows:auto auto;
+  }
+  body.workspace-open #code-workspace>.editor-card{
+    min-height:calc(100dvh - 100px);
+  }
+  body.workspace-open .brief-panel.resizable-brief-panel{
+    height:auto;
+    max-height:none;
+    overflow:visible;
+  }
+  body.workspace-open .brief-panel.resizable-brief-panel>.sidebar-panel:not([hidden]){
+    overflow:visible;
+  }
 }

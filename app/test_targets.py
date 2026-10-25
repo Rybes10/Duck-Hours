@@ -13,7 +13,7 @@ JAVA_MAIN_NOTICE = "Input main method."
 JAVA_MAIN_EXPLANATION = (
     "You can add your own main method or test this method using an automatically generated test harness."
 )
-HARNESS_LANGUAGES = {"python", "javascript", "java", "ruby", "go"}
+HARNESS_LANGUAGES = {"python", "javascript", "java", "ruby", "go", "cpp"}
 
 
 def _line_slice(source: str, start: Optional[int], end: Optional[int]) -> str:
@@ -72,9 +72,6 @@ def _python_target(
         ]
         if len(selected_functions) == 1:
             owner, node = selected_functions[0]
-            if node.name.lower() == "main":
-                return _target("invalid", "selected code", ready=False,
-                               missing_information="Choose a function other than main. Use Run for the full program.")
             context_nodes = [
                 candidate
                 for candidate in tree.body
@@ -106,6 +103,7 @@ def _python_target(
                     "method", "selected code", class_name=owner.name, method_name=node.name,
                     static_method=static_method, context_code=context_code,
                     async_function=isinstance(node, ast.AsyncFunctionDef),
+                    is_main=node.name.lower() == "main",
                 )
             return _target(
                 "function",
@@ -115,6 +113,7 @@ def _python_target(
                 async_function=isinstance(node, ast.AsyncFunctionDef),
                 selected_function_code=ast.get_source_segment(code, node) or "",
                 context_code=context_code,
+                is_main=node.name.lower() == "main",
             )
         selected_code = _line_slice(code, start, end)
         try:
@@ -205,6 +204,7 @@ def _python_target(
             function_name=node.name,
             function_line=node.lineno,
             async_function=isinstance(node, ast.AsyncFunctionDef),
+            is_main=node.name.lower() == "main",
         )
     return _target("program", "whole submission")
 
@@ -281,9 +281,6 @@ def _java_target(
         return _target("program", label, class_name=class_name, has_main=True)
     if selected_methods:
         method = selected_methods[0]
-        if method["name"].lower() == "main":
-            return _target("invalid", label, ready=False,
-                           missing_information="Choose a method other than main. Use Run for the full program.")
         constructor_pattern = re.compile(
             r"(?:public|protected|private)?\s*" + re.escape(class_name or "") + r"\s*\(([^)]*)\)"
         )
@@ -297,6 +294,7 @@ def _java_target(
             "params": method["params"],
             "method_line": method["line"],
             "has_main": has_main,
+            "is_main": method["name"].lower() == "main",
             "banner": JAVA_MAIN_NOTICE if not has_main else None,
             "explanation": JAVA_MAIN_EXPLANATION if not has_main else None,
         }
@@ -339,6 +337,74 @@ def _java_target(
     )
 
 
+def _split_cpp_parameters(parameters: str) -> List[str]:
+    """Split C++ parameters without treating template commas as separators."""
+    if not parameters.strip():
+        return []
+    parts: List[str] = []
+    start = 0
+    angle_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
+    for index, character in enumerate(parameters):
+        if character == "<":
+            angle_depth += 1
+        elif character == ">" and angle_depth:
+            angle_depth -= 1
+        elif character == "(":
+            paren_depth += 1
+        elif character == ")" and paren_depth:
+            paren_depth -= 1
+        elif character == "[":
+            bracket_depth += 1
+        elif character == "]" and bracket_depth:
+            bracket_depth -= 1
+        elif character == "," and not angle_depth and not paren_depth and not bracket_depth:
+            parts.append(parameters[start:index].strip())
+            start = index + 1
+    parts.append(parameters[start:].strip())
+    return [part for part in parts if part]
+
+
+def _cpp_function_details(source: str, function_name: str) -> Dict[str, Any]:
+    """Extract the small amount of C++ signature data the test UI needs."""
+    signature = re.search(
+        r"\b{}\s*\((?P<params>[^;{{}}()]*)\)".format(re.escape(function_name)),
+        source,
+    )
+    if not signature:
+        return {}
+    prefix = source[:signature.start()].splitlines()[-1].strip()
+    prefix = re.sub(
+        r"^(?:(?:const|static|inline|constexpr|consteval|virtual|explicit|friend|extern)\s+)+",
+        "",
+        prefix,
+    ).strip()
+    # For a qualified free-function definition, keep only the return type.
+    prefix = re.sub(r"(?:[A-Za-z_]\w*::)+$", "", prefix).strip()
+    parameters = signature.group("params").strip()
+    return {
+        "return_type": prefix or None,
+        "params": parameters,
+        "parameter_count": len(_split_cpp_parameters(parameters)),
+    }
+
+
+def _cpp_supporting_code(source: str) -> Dict[str, List[str]]:
+    """Keep harmless headers and using declarations for a selected C++ function."""
+    includes = re.findall(
+        r"^\s*#\s*include\s*(?:<[^>\n]+>|\"[^\"\n]+\")\s*(?://.*)?$",
+        source,
+        flags=re.MULTILINE,
+    )
+    preamble = re.findall(
+        r"^\s*(?:using\s+namespace\s+[^;]+;|using\s+[A-Za-z_]\w*(?:::\w+)*\s*=\s*[^;]+;)\s*$",
+        source,
+        flags=re.MULTILINE,
+    )
+    return {"cpp_includes": list(dict.fromkeys(includes)), "cpp_preamble": list(dict.fromkeys(preamble))}
+
+
 def _generic_target(
     language: str,
     code: str,
@@ -354,7 +420,7 @@ def _generic_target(
         "ruby": r"\bdef\s+([A-Za-z_][\w!?=]*)",
         "go": r"\bfunc\s+([A-Za-z_][\w]*)\s*\(",
         "c": r"\b[A-Za-z_][\w\s*]+\s+([A-Za-z_][\w]*)\s*\([^;]*\)\s*\{",
-        "cpp": r"\b[A-Za-z_][\w:\s*<>]+\s+([A-Za-z_][\w]*)\s*\([^;]*\)\s*\{",
+        "cpp": r"\b[A-Za-z_][\w:\s*&<>,~]*\s+([A-Za-z_][\w]*)\s*\([^;{}()]*\)\s*\{",
     }.get(language)
     names = re.findall(function_pattern, code) if function_pattern else []
     has_top_level_call = bool(re.search(r"\b(?:console\.log|puts|printf|fmt\.Print|println)\s*\(", code))
@@ -369,9 +435,9 @@ def _generic_target(
                 selected_lines[-1] = selected_lines[-1][:max(0, selection_end_column - 1)]
         selected = "\n".join(selected_lines).strip()
         selected_names = re.findall(function_pattern, selected) if function_pattern else []
-        if len(selected_names) != 1 or selected_names[0].lower() == "main":
+        if len(selected_names) != 1:
             return _target("invalid", label, ready=False, missing_information=
-                           "Highlight one complete function other than main. Use Run for the full program.")
+                           "Highlight one complete function or method. Use Run for the full program.")
         if language in {"javascript", "typescript", "go", "c", "cpp"}:
             opening = selected.find("{")
             depth = 0
@@ -393,7 +459,11 @@ def _generic_target(
         signature = re.search(r"(?:function|def|func)\s+" + re.escape(selected_names[0]) + r"\s*\(([^)]*)\)", selected)
         parameter_count = 0 if not signature or not signature.group(1).strip() else len(signature.group(1).split(","))
         details = {"function_name": selected_names[0], "parameter_count": parameter_count,
-                   "selected_function_code": selected, "function_line": selection_start_line}
+                   "selected_function_code": selected, "function_line": selection_start_line,
+                   "is_main": selected_names[0].lower() == "main"}
+        if language == "cpp":
+            details.update(_cpp_function_details(selected, selected_names[0]))
+            details.update(_cpp_supporting_code(code))
         if language == "go":
             imports = re.findall(r'"[A-Za-z0-9_./-]+"', "\n".join(re.findall(
                 r"(?ms)^\s*import\s*(?:\([^)]*\)|\"[^\"]+\")", code
@@ -405,7 +475,14 @@ def _generic_target(
             r"(?:function|def|func)\s+" + re.escape(names[0]) + r"\s*\(([^)]*)\)", code
         )
         parameter_count = 0 if not signature or not signature.group(1).strip() else len(signature.group(1).split(","))
-        return _target("function", label, function_name=names[0], parameter_count=parameter_count, method_line=None)
+        details = {"function_name": names[0], "parameter_count": parameter_count, "method_line": None,
+                   "is_main": names[0].lower() == "main"}
+        if language == "cpp":
+            details.update(_cpp_function_details(code, names[0]))
+            details.update(_cpp_supporting_code(code))
+        return _target(
+            "function", label, **details
+        )
     if selection_start_line is not None and selection_end_line is not None and not names:
         return _target(
             "fragment",
@@ -458,7 +535,9 @@ def _java_sample_arguments(params: str) -> Optional[List[str]]:
             return None
         parameter_type = " ".join(pieces[:-1])
         lowered = parameter_type.lower()
-        if "string" in lowered:
+        if lowered in {"string[]", "string..."}:
+            arguments.append("new String[]{}")
+        elif "string" in lowered:
             arguments.append('"office hours"')
         elif lowered in {"int", "short", "byte", "long"}:
             arguments.append("2")
@@ -585,26 +664,114 @@ def build_harness_code(target: Dict[str, Any], active_file: str, invocations: It
         return {"file": "__office_hours_harness.rb", "code": "\n".join(lines) + "\n"}
     if language == "go":
         imports = list(target.get("go_imports") or [])
-        if '"fmt"' not in imports:
+        submitted_function_code = str(target.get("selected_function_code") or "")
+        submitted_main_name = "__office_hours_submitted_main"
+        if target.get("is_main"):
+            submitted_function_code = re.sub(
+                r"\bfunc\s+main\s*\(",
+                f"func {submitted_main_name}(",
+                submitted_function_code,
+                count=1,
+            )
+        if '"fmt"' not in imports and (not target.get("is_main") or re.search(r"\bfmt\s*\.", submitted_function_code)):
             imports.insert(0, '"fmt"')
         lines = [
             "// Office Hours Prep generated test harness",
             "package main",
             "",
-            "import (" + "\n".join("\n\t" + item for item in imports) + "\n)",
-            "",
         ]
-        if target.get("selected_function_code"):
+        if imports:
+            lines.extend([
+                "import (" + "\n".join("\n\t" + item for item in imports) + "\n)",
+                "",
+            ])
+        if submitted_function_code:
             lines.extend([
                 f"//line {active_file}:{target.get('function_line') or 1}",
-                str(target["selected_function_code"]),
+                submitted_function_code,
                 "",
             ])
         lines.append("func main() {")
         for index, call in enumerate(calls, 1):
-            lines.append(f'\tfmt.Printf("Office Hours Prep result {index}: %v\\n", {call})')
+            expression = str(call).strip().rstrip(";").strip()
+            if target.get("is_main"):
+                expression = re.sub(r"^main\s*\(", f"{submitted_main_name}(", expression, count=1)
+                lines.append(f"\t{expression}")
+            else:
+                lines.append(f'\tfmt.Printf("Office Hours Prep result {index}: %v\\n", {expression})')
         lines.extend(["}", ""])
         return {"file": "__office_hours_harness.go", "code": "\n".join(lines)}
+    if language == "cpp" and target.get("function_name"):
+        includes = [
+            "#include <array>",
+            "#include <cstddef>",
+            "#include <iomanip>",
+            "#include <iostream>",
+            "#include <string>",
+            "#include <vector>",
+        ]
+        for include in target.get("cpp_includes") or []:
+            if include not in includes:
+                includes.append(include)
+        preamble = list(target.get("cpp_preamble") or [])
+        submitted_function_code = textwrap.dedent(str(target.get("selected_function_code") or "")).strip()
+        lines = [
+            "// Office Hours Prep generated test harness",
+            *includes,
+            *preamble,
+            "",
+        ]
+        if submitted_function_code:
+            lines.extend([
+                f"//line {active_file}:{target.get('function_line') or 1}",
+                submitted_function_code,
+                "",
+            ])
+        lines.extend([
+            "template <typename T>",
+            "void __ohp_print_value(const T& value) { std::cout << value; }",
+            "",
+            "template <typename T>",
+            "void __ohp_print_value(const std::vector<T>& values) {",
+            "  std::cout << \"[\";",
+            "  for (std::size_t index = 0; index < values.size(); ++index) {",
+            "    if (index) std::cout << \", \";",
+            "    __ohp_print_value(values[index]);",
+            "  }",
+            "  std::cout << \"]\";",
+            "}",
+            "",
+            "template <typename T, std::size_t N>",
+            "void __ohp_print_value(const std::array<T, N>& values) {",
+            "  std::cout << \"[\";",
+            "  for (std::size_t index = 0; index < N; ++index) {",
+            "    if (index) std::cout << \", \";",
+            "    __ohp_print_value(values[index]);",
+            "  }",
+            "  std::cout << \"]\";",
+            "}",
+            "",
+            "int main() {",
+            "  std::boolalpha;",
+            "  std::setprecision(17);",
+        ])
+        return_type = str(target.get("return_type") or "").replace(" ", "").lower()
+        for index, call in enumerate(calls, 1):
+            expression = str(call).strip().rstrip(";").strip()
+            if return_type in {"void", "none"}:
+                lines.extend([
+                    f"  {expression};",
+                    f'  std::cout << "Office Hours Prep result {index}: void\\n";',
+                ])
+            else:
+                lines.extend([
+                    f"  auto __ohp_value_{index} = ({expression});",
+                    f'  std::cout << "Office Hours Prep result {index}: ";',
+                    f"  __ohp_print_value(__ohp_value_{index});",
+                    '  std::cout << "\\n";',
+                ])
+        lines.extend(["}", ""])
+        return {"file": "__office_hours_harness.cpp", "code": "\n".join(lines)}
     if language == "java" and target.get("method_name"):
         class_name = target.get("class_name") or "OfficeHoursSubmission"
         method_name = target["method_name"]
@@ -628,7 +795,11 @@ def build_harness_code(target: Dict[str, Any], active_file: str, invocations: It
             "  public static void main(String[] args) {",
         ])
         for index, call in enumerate(calls, 1):
-            expression = call if call.startswith((f"{class_name}.", "new ")) else f"{receiver}{call}"
+            expression = str(call).strip().rstrip(";").strip()
+            expression = expression if expression.startswith((f"{class_name}.", "new ")) else f"{receiver}{expression}"
+            if return_type in {"void", "none"}:
+                lines.append(f"    {expression};")
+                continue
             if return_type.endswith("[]"):
                 element_type = return_type[:-2]
                 if element_type.endswith("[]"):
