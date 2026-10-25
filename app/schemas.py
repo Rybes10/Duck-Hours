@@ -40,6 +40,8 @@ class RunRequest(BaseModel):
     intent: str = Field("", max_length=5000)
     active_file: str = Field("main.py", min_length=1, max_length=100)
     files: List[WorkspaceFile] = Field(default_factory=list, max_length=20)
+    files_to_check: List[str] = Field(default_factory=list, max_length=20)
+    memory_limit_mb: Optional[int] = Field(None, ge=1, le=4096)
 
 
 class GeneratedWorkspaceFile(BaseModel):
@@ -54,6 +56,9 @@ class RunResponse(BaseModel):
     error: Optional[str] = None
     line: Optional[int] = None
     generated_files: List[GeneratedWorkspaceFile] = Field(default_factory=list)
+    workspace_files: List[GeneratedWorkspaceFile] = Field(default_factory=list, max_length=40)
+    memory_usage_bytes: Optional[int] = None
+    memory_limit_exceeded: bool = False
 
 
 class HintRequest(BaseModel):
@@ -90,11 +95,20 @@ class GenerateTestCasesRequest(BaseModel):
     code: str = Field(..., min_length=1, max_length=50000)
     files: List[WorkspaceFile] = Field(default_factory=list, max_length=20)
     existing_cases: List[GeneratedTestCase] = Field(default_factory=list, max_length=50)
+    max_cases: int = Field(8, ge=0, le=20)
     intent: str = Field("", max_length=5000)
     constraints: str = Field("", max_length=5000)
 
 
+class GeneratedCaseStrategy(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    description: str = Field("", max_length=500)
+    code: str = Field("", max_length=4000)
+    cases: List[GeneratedTestCase] = Field(default_factory=list, max_length=20)
+
+
 class GenerateTestCasesResponse(BaseModel):
-    cases: List[GeneratedTestCase]
+    cases: List[GeneratedTestCase] = Field(default_factory=list, max_length=20)
+    strategies: List[GeneratedCaseStrategy] = Field(default_factory=list, max_length=10)
 
 

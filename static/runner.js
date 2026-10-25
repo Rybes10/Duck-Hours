@@ -2,6 +2,7 @@ runButton.addEventListener('click', async () => {
   if (!codeEditor || !codeEditor.getModel() || files.length === 0) return;
   const runFileId = activeFileId;
   document.body.classList.remove('testcase-results-open');
+  renderConstraintResults([]);
   const runStartedAt = performance.now();
   runButton.disabled = true;
   runButton.textContent = 'Running…';
@@ -16,25 +17,36 @@ runButton.addEventListener('click', async () => {
       language: currentLanguage,
       code: codeEditor.getValue(),
       active_file: files.find(file => file.id === activeFileId)?.name || 'main.py',
-      files: files.filter(file => !file.generated).map(file => ({name: file.name, code: file.model.getValue()})),
+      files: allWorkspaceFiles().filter(file => !file.generated).map(file => ({name: file.name, code: file.model.getValue()})),
+      stdin: document.querySelector('#stdin').value,
+      memory_limit_mb: Number(document.querySelector('#memory-limit').value) || null,
       intent: [
         `Program purpose: ${document.querySelector('#intent').value.trim() || 'Not specified'}`,
-        `Time limit: ${document.querySelector('#time-limit').value || 'Not specified'}`,
-        `Memory limit: ${document.querySelector('#memory-limit').value || 'Not specified'}`,
-        `Expected input size: ${document.querySelector('#input-size').value || 'Not specified'}`,
+        `Per-case time limit: ${document.querySelector('#time-limit').value || 'Not specified'}`,
+        `Per-case memory limit: ${document.querySelector('#memory-limit').value || 'Not specified'}`,
         `Other constraints: ${document.querySelector('#constraints').value.trim() || 'None specified'}`
       ].join('\n')
     })});
-    const data = await response.json();
+    const data = await parseApiResponse(response, 'The code could not be run.');
     if (activeFileId !== runFileId) return;
-    if (!response.ok) throw new Error(data.detail || 'The code could not be run.');
     showGeneratedFiles(data.generated_files || []);
     lastRun = data;
-    evaluateRunChecks(performance.now() - runStartedAt, data.status === 'success');
+    const elapsedMs = performance.now() - runStartedAt;
+    const caseIssues = evaluateCaseLimits(elapsedMs, data);
+    const programIssues = evaluateProgramRequirements([{
+      name: 'Run',
+      passed: data.status === 'success',
+      memoryMeasured: Number.isFinite(data.memory_usage_bytes)
+    }]);
+    renderConstraintResults([...caseIssues, ...programIssues]);
     showRunResult(data);
     if (data.line) markLine(data);
   } catch (error) {
-    evaluateRunChecks(performance.now() - runStartedAt, false);
+    renderConstraintResults([
+      {type: 'error', title: 'Execution', detail: error.message},
+      ...evaluateCaseLimits(performance.now() - runStartedAt),
+      ...evaluateProgramRequirements([{name: 'Run', passed: false, memoryMeasured: false}])
+    ]);
     output.className = 'output-box error';
     output.innerHTML = `<span class="output-title">Could not run the code</span><span class="output-details">${escapeHtml(error.message)}</span>`;
     outputStatus.textContent = 'Error';
@@ -44,29 +56,51 @@ runButton.addEventListener('click', async () => {
   }
 });
 
-function setCheckStatus(id, state, message) {
-  const indicator = document.querySelector(`#${id}`);
-  indicator.dataset.state = state;
-  indicator.textContent = message;
+function evaluateCaseLimits(elapsedMs, data = {}) {
+  const issues = [];
+  const timeLimit = Number(document.querySelector('#time-limit').value);
+  if (timeLimit && elapsedMs > timeLimit * 1000) {
+    issues.push({type: 'error', title: 'Time limit', detail: `This run took ${Math.round(elapsedMs)} ms; per-case limit is ${timeLimit} s.`});
+  }
+  if (data.memory_limit_exceeded) {
+    const memoryMb = (data.memory_usage_bytes / (1024 * 1024)).toFixed(1);
+    issues.push({type: 'error', title: 'Memory limit', detail: `This case used about ${memoryMb} MB; per-case limit is ${document.querySelector('#memory-limit').value} MB.`});
+  }
+  return issues;
 }
 
-function evaluateRunChecks(elapsedMs, runSucceeded) {
-  const timeLimit = Number(document.querySelector('#time-limit').value);
-  if (!timeLimit) {
-    setCheckStatus('check-time', 'idle', 'Not set');
-  } else if (!runSucceeded) {
-    setCheckStatus('check-time', 'review', 'Run failed');
-  } else {
-    const elapsed = Math.round(elapsedMs);
-    const passed = elapsedMs <= timeLimit * 1000;
-    setCheckStatus('check-time', passed ? 'pass' : 'fail', `${passed ? 'Pass' : 'Over'} · ${elapsed} ms`);
+function evaluateProgramRequirements(runs) {
+  const issues = [];
+  const failedRuns = runs.filter(run => !run.passed);
+  if (failedRuns.length) {
+    const names = failedRuns.map(run => run.name).join(', ');
+    issues.push({type: 'error', title: 'Program execution', detail: `${failedRuns.length} of ${runs.length} run${runs.length === 1 ? '' : 's'} failed${names ? `: ${names}` : ''}.`});
   }
-
   const memoryLimit = document.querySelector('#memory-limit').value;
-  setCheckStatus('check-memory', memoryLimit ? 'review' : 'idle', memoryLimit ? 'Not measured' : 'Not set');
-
+  const unmeasuredRuns = runs.filter(run => !run.memoryMeasured);
+  if (memoryLimit && unmeasuredRuns.length) {
+    issues.push({type: 'review', title: 'Memory limit', detail: `Memory could not be measured for ${unmeasuredRuns.map(run => run.name).join(', ')}.`});
+  }
   const otherConstraints = document.querySelector('#constraints').value.trim();
-  setCheckStatus('check-other', otherConstraints ? 'review' : 'idle', otherConstraints ? 'Review' : 'None');
+  if (otherConstraints) {
+    issues.push({type: 'review', title: 'Other program requirements', detail: `Review against the whole program: ${otherConstraints}`});
+  }
+  return issues;
+}
+
+function renderConstraintResults(issues) {
+  const panel = document.querySelector('#constraint-results');
+  if (!panel) return;
+  panel.replaceChildren();
+  panel.hidden = issues.length === 0;
+  if (!issues.length) return;
+  panel.className = `constraint-results ${issues.some(issue => issue.type === 'error') ? 'has-errors' : 'needs-review'}`;
+  panel.append(createElement('h3', '', 'Requirement issues'));
+  issues.forEach(issue => {
+    const row = createElement('div', `constraint-issue ${issue.type}`);
+    row.append(createElement('strong', '', issue.title), createElement('span', '', issue.detail));
+    panel.append(row);
+  });
 }
 
 function showRunResult(data) {
@@ -108,8 +142,7 @@ async function requestHint() {
       intent: document.querySelector('#intent').value,
       compiler_error: lastRun.output || lastRun.error || ''
     })});
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Gemini could not provide a hint.');
+    const data = await parseApiResponse(response, 'Gemini could not provide a hint.');
     if (!data.hints || data.hints.length === 0) {
       hintButton.disabled = false;
       hintButton.textContent = '? Give me a hint';

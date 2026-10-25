@@ -15,13 +15,26 @@ function setupSidebar() {
   setupPanel.setAttribute('aria-labelledby', 'run-setup-tab');
   [...sidebar.children].forEach(child => setupPanel.append(child));
   setupPanel.querySelector(':scope > p')?.remove();
-  setupPanel.querySelector('.stdin-field')?.remove();
 
   const testPanel = createElement('section', 'sidebar-panel testcase-panel');
   testPanel.id = 'testcases-panel';
   testPanel.setAttribute('role', 'tabpanel');
   testPanel.setAttribute('aria-labelledby', 'testcases-tab');
   testPanel.hidden = true;
+
+  const workspaceFilesPanel = createElement('section', 'sidebar-panel workspace-files-panel');
+  workspaceFilesPanel.id = 'workspace-files-panel';
+  workspaceFilesPanel.setAttribute('role', 'tabpanel');
+  workspaceFilesPanel.setAttribute('aria-labelledby', 'workspace-files-tab');
+  workspaceFilesPanel.hidden = true;
+  const workspaceFilesHeading = createElement('div', 'testcase-heading');
+  workspaceFilesHeading.append(createElement('h3', '', 'Workspace files'));
+  const workspaceFilesCount = createElement('span', 'testcase-count');
+  workspaceFilesCount.id = 'workspace-files-count';
+  workspaceFilesHeading.append(workspaceFilesCount);
+  const workspaceFilesList = createElement('div', 'workspace-files-list');
+  workspaceFilesList.id = 'workspace-files-list';
+  workspaceFilesPanel.append(workspaceFilesHeading, workspaceFilesList);
 
   const navigation = createElement('div', 'sidebar-tabs');
   navigation.setAttribute('role', 'tablist');
@@ -38,19 +51,30 @@ function setupSidebar() {
   casesTab.setAttribute('role', 'tab');
   casesTab.setAttribute('aria-controls', testPanel.id);
   casesTab.setAttribute('aria-selected', 'false');
-  navigation.append(setupTab, casesTab);
-  sidebar.replaceChildren(navigation, setupPanel, testPanel);
+  const workspaceFilesTab = createElement('button', 'sidebar-tab', 'Files');
+  workspaceFilesTab.type = 'button';
+  workspaceFilesTab.id = 'workspace-files-tab';
+  workspaceFilesTab.setAttribute('role', 'tab');
+  workspaceFilesTab.setAttribute('aria-controls', workspaceFilesPanel.id);
+  workspaceFilesTab.setAttribute('aria-selected', 'false');
+  navigation.append(setupTab, casesTab, workspaceFilesTab);
+  sidebar.replaceChildren(navigation, setupPanel, testPanel, workspaceFilesPanel);
 
   function selectPanel(selectedTab) {
     const showCases = selectedTab === casesTab;
-    setupTab.setAttribute('aria-selected', String(!showCases));
+    const showFiles = selectedTab === workspaceFilesTab;
+    setupTab.setAttribute('aria-selected', String(!showCases && !showFiles));
     casesTab.setAttribute('aria-selected', String(showCases));
-    setupPanel.hidden = showCases;
+    workspaceFilesTab.setAttribute('aria-selected', String(showFiles));
+    setupPanel.hidden = showCases || showFiles;
     testPanel.hidden = !showCases;
+    workspaceFilesPanel.hidden = !showFiles;
   }
 
   setupTab.addEventListener('click', () => selectPanel(setupTab));
   casesTab.addEventListener('click', () => selectPanel(casesTab));
+  workspaceFilesTab.addEventListener('click', () => selectPanel(workspaceFilesTab));
+  renderWorkspaceFiles();
 
   const casesHeading = createElement('div', 'testcase-heading');
   casesHeading.append(createElement('h3', '', 'Cases'));
@@ -58,6 +82,15 @@ function setupSidebar() {
   caseCount.id = 'testcase-count';
   casesHeading.append(caseCount);
   const caseActions = createElement('div', 'testcase-tools');
+  const deselectCaseButton = createElement('button', 'deselect-testcase', 'Deselect');
+  deselectCaseButton.type = 'button';
+  deselectCaseButton.id = 'deselect-testcase';
+  deselectCaseButton.title = 'Deselect this test case';
+  deselectCaseButton.addEventListener('click', () => {
+    selectedTestCaseId = null;
+    renderTestCases();
+  });
+  caseActions.append(deselectCaseButton);
   const generateCasesButton = createElement('button', 'generate-testcases', 'Generate test cases');
   generateCasesButton.type = 'button';
   generateCasesButton.addEventListener('click', generateTestCases);
@@ -108,6 +141,25 @@ function setupSidebar() {
   actionList.append(clearAiButton, clearAllButton);
   caseActions.append(generateCasesButton, addCaseButton, actionMenu);
   casesHeading.append(caseActions);
+  const aiLimitControl = createElement('div', 'testcase-limit-control');
+  const aiLimitLabel = createElement('label', '', 'AI case limit');
+  aiLimitLabel.htmlFor = 'ai-testcase-limit';
+  const aiLimitInput = createElement('input', 'ai-testcase-limit');
+  aiLimitInput.type = 'number';
+  aiLimitInput.id = 'ai-testcase-limit';
+  aiLimitInput.min = '0';
+  aiLimitInput.max = '20';
+  aiLimitInput.step = '1';
+  aiLimitInput.value = String(maxAiTestCases);
+  aiLimitInput.title = 'Maximum total AI-generated test cases; manual cases do not count';
+  aiLimitInput.addEventListener('change', () => {
+    const value = Number(aiLimitInput.value);
+    maxAiTestCases = Number.isFinite(value) ? Math.min(20, Math.max(0, Math.trunc(value))) : 8;
+    aiLimitInput.value = String(maxAiTestCases);
+    persistWorkspace();
+    renderTestCases();
+  });
+  aiLimitControl.append(aiLimitLabel, aiLimitInput, createElement('span', '', 'Manual cases do not count'));
   const generatorStatus = createElement('p', 'testcase-generator-status');
   generatorStatus.id = 'testcase-generator-status';
   generatorStatus.setAttribute('aria-live', 'polite');
@@ -129,20 +181,31 @@ function setupSidebar() {
   runCasesButton.type = 'button';
   runCasesButton.disabled = true;
   runCasesButton.addEventListener('click', runTestCases);
-  testPanel.append(casesHeading, generatorStatus, caseList, caseEditor, runCasesButton);
+  testPanel.append(casesHeading, aiLimitControl, generatorStatus, caseList, caseEditor, runCasesButton);
   renderTestCases();
 }
 
 function renderTestCases() {
+  persistWorkspace();
   const caseList = document.querySelector('#testcase-list');
   const caseEditor = document.querySelector('#testcase-editor');
   if (!caseList || !caseEditor) return;
   caseList.replaceChildren();
-  if (!testCases.some(testCase => testCase.id === selectedTestCaseId)) {
+  if (selectedTestCaseId !== null && !testCases.some(testCase => testCase.id === selectedTestCaseId)) {
     selectedTestCaseId = testCases[0]?.id ?? null;
   }
+  const deselectButton = document.querySelector('#deselect-testcase');
+  if (deselectButton) deselectButton.disabled = selectedTestCaseId === null;
   const count = document.querySelector('#testcase-count');
-  if (count) count.textContent = `${testCases.length} total`;
+  const aiCaseCount = testCases.filter(testCase => testCase.origin === 'ai').length;
+  if (count) count.textContent = `${testCases.length} total · ${aiCaseCount}/${maxAiTestCases} AI`;
+  const aiLimitInput = document.querySelector('#ai-testcase-limit');
+  if (aiLimitInput && document.activeElement !== aiLimitInput) aiLimitInput.value = String(maxAiTestCases);
+  const generateButton = document.querySelector('.generate-testcases');
+  if (generateButton && generateButton.dataset.generating !== 'true') {
+    generateButton.disabled = aiCaseCount >= maxAiTestCases;
+    generateButton.title = aiCaseCount >= maxAiTestCases ? 'AI testcase limit reached; increase the limit to generate more' : 'Generate additional AI test cases';
+  }
   const runButton = document.querySelector('.run-testcases');
   if (runButton) runButton.disabled = testCases.length === 0 || runButton.textContent === 'Running tests…';
   const clearAiButton = document.querySelector('.testcase-menu-action.danger')?.previousElementSibling;
@@ -174,10 +237,7 @@ function renderTestCases() {
 
   caseEditor.replaceChildren();
   const testCase = testCases.find(item => item.id === selectedTestCaseId);
-  if (!testCase) {
-    caseEditor.append(createElement('p', 'testcase-empty', 'Select a test case to edit its inputs and expected output.'));
-    return;
-  }
+  if (!testCase) return;
 
   const header = createElement('div', 'testcase-title-row');
   const selectedCaseTitle = createElement('div', 'testcase-selected-title');
@@ -197,6 +257,15 @@ function renderTestCases() {
 
   caseEditor.append(header);
 
+  if (testCase.generationStrategy) {
+    const strategyDetails = createElement('details', 'testcase-generation-strategy');
+    const strategySummary = createElement('summary', '', `Generated with: ${testCase.generationStrategy.name}`);
+    strategyDetails.append(strategySummary);
+    if (testCase.generationStrategy.description) strategyDetails.append(createElement('p', '', testCase.generationStrategy.description));
+    if (testCase.generationStrategy.code) strategyDetails.append(createElement('pre', '', testCase.generationStrategy.code));
+    caseEditor.append(strategyDetails);
+  }
+
   const stdinField = createElement('div', 'testcase-field');
   stdinField.append(createElement('label', '', 'Standard input'));
   const stdinInput = createElement('textarea', 'testcase-input');
@@ -211,7 +280,7 @@ function renderTestCases() {
   filesHeading.append(createElement('h3', '', 'File overrides'));
   const addFileOverride = createElement('button', 'add-testcase', 'Add file');
   addFileOverride.type = 'button';
-  addFileOverride.disabled = files.length === 0;
+  addFileOverride.disabled = allWorkspaceFiles().every(file => file.generated);
   addFileOverride.addEventListener('click', () => {
     testCase.files.push({id: `fixture-${Date.now()}-${Math.random()}`, fileName: '', contents: ''});
     renderTestCases();
@@ -221,7 +290,7 @@ function renderTestCases() {
 
   const overrideList = createElement('div', 'testcase-overrides');
   if (testCase.files.length === 0) {
-    overrideList.append(createElement('p', 'testcase-empty', files.length ? 'No file overrides.' : 'Add an editor file before creating an override.'));
+    overrideList.append(createElement('p', 'testcase-empty', allWorkspaceFiles().some(file => !file.generated) ? 'No file overrides.' : 'Add a workspace file before creating an override.'));
   }
   testCase.files.forEach((fixture, fixtureIndex) => {
     const fixtureCard = createElement('div', 'testcase-file-fixture');
@@ -232,7 +301,7 @@ function renderTestCases() {
     const placeholder = createElement('option', '', 'Choose a file');
     placeholder.value = '';
     fileSelect.append(placeholder);
-    files.filter(file => !file.generated).forEach(file => {
+    allWorkspaceFiles().filter(file => !file.generated).forEach(file => {
       const option = createElement('option', '', file.name);
       option.value = file.name;
       fileSelect.append(option);
@@ -285,6 +354,7 @@ function renderTestCases() {
   });
   requiredFilesHeading.append(addRequiredFile);
   requiredFiles.append(requiredFilesHeading);
+  requiredFiles.append(createElement('p', 'required-file-help', 'Checks that the named file exists after execution and that its contents match. Matching open file tabs are marked in blue.'));
   if (testCase.expectedFiles.length === 0) {
     requiredFiles.append(createElement('p', 'testcase-empty', 'No required file checks.'));
   }
@@ -293,18 +363,29 @@ function renderTestCases() {
     const expectedFileHeading = createElement('div', 'testcase-file-row');
     const fileName = createElement('input', 'testcase-file');
     fileName.type = 'text';
-    fileName.placeholder = 'Output file name, e.g. results.txt';
+    fileName.placeholder = 'e.g. results.txt';
+    fileName.autocomplete = 'off';
+    fileName.spellcheck = false;
+    fileName.required = true;
+    fileName.title = 'Name used to identify this expected output and highlight a matching editor file';
     fileName.value = expectedFile.name;
     fileName.setAttribute('aria-label', `${testCase.name} required file ${fileIndex + 1} name`);
-    fileName.addEventListener('input', () => { expectedFile.name = fileName.value.trim(); });
+    fileName.addEventListener('input', () => {
+      expectedFile.name = fileName.value.trim();
+      renderFileTabs();
+    });
     const removeExpectedFile = createElement('button', 'delete-testcase', '×');
     removeExpectedFile.type = 'button';
     removeExpectedFile.setAttribute('aria-label', `Remove required file check ${fileIndex + 1}`);
     removeExpectedFile.addEventListener('click', () => {
       testCase.expectedFiles.splice(fileIndex, 1);
       renderTestCases();
+      renderFileTabs();
     });
-    expectedFileHeading.append(fileName, removeExpectedFile);
+    const fileNameLabel = createElement('label', 'required-file-name-label', 'Output file');
+    fileNameLabel.htmlFor = `expected-file-name-${testCase.id}-${fileIndex}`;
+    fileName.id = fileNameLabel.htmlFor;
+    expectedFileHeading.append(fileNameLabel, fileName, removeExpectedFile);
     const expectedContents = createElement('textarea', 'testcase-file-content');
     expectedContents.placeholder = 'Expected contents of this file';
     expectedContents.value = expectedFile.contents;
@@ -328,6 +409,7 @@ async function runTestCases() {
   const button = document.querySelector('.run-testcases');
   if (!codeEditor || !button || button.disabled || testCases.length === 0) return;
   document.body.classList.add('testcase-results-open');
+  renderConstraintResults([]);
   button.disabled = true;
   button.textContent = 'Running tests…';
   output.className = 'output-box testcase-results';
@@ -344,15 +426,15 @@ async function runTestCases() {
       const overrides = new Map();
       for (const fixture of testCase.files) {
         if (!fixture.fileName) throw new Error('Choose a target editor file for each file override.');
-        if (!files.some(file => file.name === fixture.fileName)) {
-          throw new Error(`The editor file "${fixture.fileName}" is no longer available.`);
+        if (!allWorkspaceFiles().some(file => file.name === fixture.fileName && !file.generated)) {
+          throw new Error(`The workspace file "${fixture.fileName}" is no longer available.`);
         }
         overrides.set(fixture.fileName, fixture.contents);
       }
 
       const activeFile = files.find(file => file.id === activeFileId && !file.generated) || files.find(file => !file.generated);
       if (!activeFile) throw new Error('Select an editor file before running test cases.');
-      const requestFiles = files.filter(file => !file.generated).map(file => ({
+      const requestFiles = allWorkspaceFiles().filter(file => !file.generated).map(file => ({
         name: file.name,
         code: overrides.has(file.name) ? overrides.get(file.name) : file.model.getValue()
       }));
@@ -366,15 +448,23 @@ async function runTestCases() {
           active_file: activeFile.name,
           stdin: testCase.stdin,
           files: requestFiles,
+          files_to_check: testCase.expectedFiles.map(expectedFile => expectedFile.name.trim()).filter(Boolean),
+          memory_limit_mb: Number(document.querySelector('#memory-limit').value) || null,
           intent: document.querySelector('#intent').value.trim()
         })
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'The test case could not be run.');
+      const data = await parseApiResponse(response, 'The test case could not be run.');
       const actualOutput = data.output || '';
       const hasRequiredOutput = normalizeOutput(testCase.expectedOutput).length > 0;
       const outputMatches = !hasRequiredOutput || (data.status === 'success' && normalizeOutput(actualOutput) === normalizeOutput(testCase.expectedOutput));
-      const checks = evaluateTestCaseConstraints(testCase, performance.now() - caseStartedAt, data.status === 'success');
+      const checks = evaluateTestCaseConstraints(performance.now() - caseStartedAt);
+      if (data.memory_limit_exceeded) {
+        checks.push({
+          name: 'Memory limit',
+          status: 'failed',
+          detail: `Peak sampled process-tree memory: ${(data.memory_usage_bytes / (1024 * 1024)).toFixed(1)} MB / ${document.querySelector('#memory-limit').value} MB`
+        });
+      }
       checks.push({
         name: 'Execution',
         status: data.status === 'success' ? 'passed' : 'failed',
@@ -384,19 +474,24 @@ async function runTestCases() {
         checks.push({name: 'Stdout', status: outputMatches ? 'passed' : 'failed', detail: outputMatches ? 'Matches required output' : 'Does not match required output'});
       }
       const generatedFiles = data.generated_files || [];
-      const generatedByName = new Map(generatedFiles.map(file => [file.name, file.contents]));
+      const hasWorkspaceSnapshot = Array.isArray(data.workspace_files);
+      const workspaceFiles = hasWorkspaceSnapshot ? data.workspace_files : generatedFiles;
+      const filesAfterRunByName = new Map(workspaceFiles.map(file => [String(file.name || '').trim().toLowerCase(), file.contents || '']));
       testCase.expectedFiles.forEach(expectedFile => {
         const fileName = expectedFile.name.trim();
         if (!fileName) {
-          checks.push({name: 'Required file', status: 'failed', detail: 'Enter a file name to check'});
+          checks.push({name: 'Output file', status: 'failed', detail: 'Enter the output file name to check'});
           return;
         }
-        const exists = generatedByName.has(fileName);
-        const matches = exists && normalizeOutput(generatedByName.get(fileName)) === normalizeOutput(expectedFile.contents);
+        const fileContents = filesAfterRunByName.get(fileName.toLowerCase());
+        const existsAfterRun = fileContents !== undefined;
+        const fileMatches = existsAfterRun && normalizeOutput(fileContents) === normalizeOutput(expectedFile.contents);
         checks.push({
-          name: `File: ${fileName}`,
-          status: data.status === 'success' && matches ? 'passed' : 'failed',
-          detail: !exists ? 'Program did not create this file' : matches ? 'Contents match' : 'Contents do not match'
+          name: `Output: ${fileName}`,
+          status: data.status === 'success' && fileMatches ? 'passed' : 'failed',
+          detail: !hasWorkspaceSnapshot
+            ? 'The runner did not return a post-execution workspace snapshot. Restart the server and reload the page.'
+            : !existsAfterRun ? `File "${fileName}" does not exist after execution` : fileMatches ? 'File contents match' : 'File contents do not match'
         });
       });
       const hasFailure = checks.some(check => check.status === 'failed');
@@ -406,6 +501,7 @@ async function runTestCases() {
         actualOutput,
         expectedOutput: testCase.expectedOutput,
         stdin: testCase.stdin,
+        memoryUsageBytes: data.memory_usage_bytes ?? null,
         error: data.status === 'success' ? '' : (data.error || data.status),
         files: [...overrides.keys()],
         generatedFiles: generatedFiles.map(file => file.name),
@@ -415,7 +511,7 @@ async function runTestCases() {
     } catch (error) {
       testCase.status = 'failed';
       testCase.result = {
-        actualOutput: '', expectedOutput: testCase.expectedOutput, stdin: testCase.stdin, error: error.message, files: [], generatedFiles: [],
+        actualOutput: '', expectedOutput: testCase.expectedOutput, stdin: testCase.stdin, memoryUsageBytes: null, error: error.message, files: [], generatedFiles: [],
         checks: [{name: 'Execution', status: 'failed', detail: error.message}]
       };
     }
@@ -423,48 +519,22 @@ async function runTestCases() {
     renderTestCases();
   }
 
+  renderConstraintResults(evaluateProgramRequirements(testCases.map(testCase => ({
+    name: testCase.name,
+    passed: testCase.status === 'passed',
+    memoryMeasured: Number.isFinite(testCase.result?.memoryUsageBytes)
+  }))));
   renderTestRunOutput(results);
   button.disabled = false;
   button.textContent = 'Run with testcases';
 }
 
-function evaluateTestCaseConstraints(testCase, elapsedMs, runSucceeded) {
+function evaluateTestCaseConstraints(elapsedMs) {
   const checks = [];
   const timeLimit = Number(document.querySelector('#time-limit').value);
-  if (!timeLimit) {
-    checks.push({name: 'Time', status: 'not-set', detail: 'No time limit selected'});
-  } else {
-    const passed = runSucceeded && elapsedMs <= timeLimit * 1000;
-    checks.push({
-      name: 'Time', status: passed ? 'passed' : 'failed',
-      detail: runSucceeded ? `${Math.round(elapsedMs)} ms / ${timeLimit} s` : 'Program did not complete successfully'
-    });
+  if (timeLimit && elapsedMs > timeLimit * 1000) {
+    checks.push({name: 'Time limit', status: 'failed', detail: `${Math.round(elapsedMs)} ms / ${timeLimit} s`});
   }
-
-  const inputLimit = Number(document.querySelector('#input-size').value);
-  const inputBytes = new Blob([testCase.stdin, ...testCase.files.map(fixture => fixture.contents)]).size;
-  const hasInput = testCase.stdin.length > 0 || testCase.files.length > 0;
-  if (hasInput) {
-    if (!inputLimit) {
-      checks.push({name: 'Input size', status: 'not-set', detail: `${inputBytes} B; no limit selected`});
-    } else {
-      const passed = inputBytes <= inputLimit;
-      checks.push({
-        name: 'Input size', status: passed ? 'passed' : 'failed',
-        detail: `${inputBytes} B / ${inputLimit} B`
-      });
-    }
-  }
-
-  const memoryLimit = document.querySelector('#memory-limit').value;
-  checks.push(memoryLimit
-    ? {name: 'Memory', status: 'review', detail: `${memoryLimit} MB selected; runner does not report memory use`}
-    : {name: 'Memory', status: 'not-set', detail: 'No memory limit selected'});
-
-  const otherConstraints = document.querySelector('#constraints').value.trim();
-  checks.push(otherConstraints
-    ? {name: 'Other constraints', status: 'review', detail: 'Requires manual review'}
-    : {name: 'Other constraints', status: 'not-set', detail: 'None specified'});
   return checks;
 }
 
@@ -473,7 +543,14 @@ async function generateTestCases() {
   const status = document.querySelector('#testcase-generator-status');
   const activeFile = files.find(file => file.id === activeFileId);
   if (!button || !status || !codeEditor || !activeFile) return;
+  const remainingAiSlots = Math.max(0, maxAiTestCases - testCases.filter(testCase => testCase.origin === 'ai').length);
+  if (!remainingAiSlots) {
+    status.textContent = 'AI testcase limit reached. Increase the limit to generate more.';
+    status.hidden = false;
+    return;
+  }
   button.disabled = true;
+  button.dataset.generating = 'true';
   button.textContent = 'Generating…';
   status.textContent = '';
   status.hidden = true;
@@ -485,28 +562,36 @@ async function generateTestCases() {
         language: currentLanguage,
         active_file: activeFile.name,
         code: activeFile.model.getValue(),
-        files: files.filter(file => !file.generated).map(file => ({name: file.name, code: file.model.getValue()})),
-        existing_cases: testCases.map(testCase => ({
+        files: allWorkspaceFiles().filter(file => !file.generated).map(file => ({name: file.name, code: file.model.getValue()})),
+        existing_cases: testCases.filter(testCase => testCase.origin === 'ai').map(testCase => ({
           name: testCase.name,
           stdin: testCase.stdin,
           files: testCase.files.map(fixture => ({file_name: fixture.fileName, contents: fixture.contents})),
           expected_output: testCase.expectedOutput
         })),
+        max_cases: remainingAiSlots,
         intent: document.querySelector('#intent').value.trim(),
         constraints: [
-          `Time limit: ${document.querySelector('#time-limit').value || 'Not specified'}`,
-          `Memory limit: ${document.querySelector('#memory-limit').value || 'Not specified'}`,
-          `Expected input size: ${document.querySelector('#input-size').value || 'Not specified'}`,
-          `Other constraints: ${document.querySelector('#constraints').value.trim() || 'None specified'}`
+          `Per-case time limit: ${document.querySelector('#time-limit').value || 'Not specified'}`,
+          `Per-case memory limit: ${document.querySelector('#memory-limit').value || 'Not specified'}`,
+          `Program requirements: ${document.querySelector('#constraints').value.trim() || 'None specified'}`
         ].join('\n')
       })
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || 'Could not generate test cases.');
-    const generated = (data.cases || []).map((generatedCase, index) => ({
+    const data = await parseApiResponse(response, 'Could not generate test cases.');
+    const strategyCases = (data.strategies || []).flatMap(strategy => (strategy.cases || []).map(generatedCase => ({
+      generatedCase,
+      strategy: {name: strategy.name, description: strategy.description, code: strategy.code}
+    })));
+    const generatedCases = strategyCases.length
+      ? strategyCases
+      : (data.cases || []).map(generatedCase => ({generatedCase, strategy: null}));
+    const currentAiSlots = Math.max(0, maxAiTestCases - testCases.filter(testCase => testCase.origin === 'ai').length);
+    const generated = generatedCases.slice(0, Math.min(remainingAiSlots, currentAiSlots)).map(({generatedCase, strategy}, index) => ({
       id: nextTestCaseId + index,
       name: generatedCase.name || `AI case ${nextTestCaseId + index}`,
       origin: 'ai',
+      generationStrategy: strategy,
       stdin: generatedCase.stdin || '',
       files: (generatedCase.files || []).map((fixture, fixtureIndex) => ({
         id: `ai-fixture-${nextTestCaseId + index}-${fixtureIndex}`,
@@ -532,8 +617,10 @@ async function generateTestCases() {
     status.textContent = error.message;
   } finally {
     status.hidden = false;
+    button.dataset.generating = 'false';
     button.disabled = false;
     button.textContent = 'Generate test cases';
+    renderTestCases();
   }
 }
 
