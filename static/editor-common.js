@@ -1,3 +1,4 @@
+// Shared browser state for the workspace, its files, and its testcases; keeping it here lets the focused UI modules coordinate persistence.
 if (window.__officeHoursPrepEditorLoaded) {
   throw new Error('Duplicate Office Hours Prep editor script ignored.');
 }
@@ -8,6 +9,7 @@ let currentLanguage = 'python';
 let activeFileId = 'file-0';
 let nextFileNumber = 1;
 const files = [];
+// Closing a tab hides a file without deleting it, so it remains available to reopen and to testcase inputs.
 const closedFiles = [];
 const runButton = document.querySelector('#run');
 const output = document.querySelector('#output');
@@ -25,6 +27,7 @@ let lastRun = null;
 let hintDecorations = [];
 const legacyWorkspaceStorageKey = 'office-hours-prep.workspace.v1';
 const workspaceCatalogStorageKey = 'office-hours-prep.workspaces.v1';
+// Keep a browser-local catalog so users can return to or delete individual workspaces without creating an account.
 const workspaceCatalog = (() => {
   try {
     const stored = JSON.parse(localStorage.getItem(workspaceCatalogStorageKey) || 'null');
@@ -75,6 +78,8 @@ if (savedWorkspace?.settings) {
   const savedAiLimit = Number(savedWorkspace.settings.maxAiTestCases);
   maxAiTestCases = Number.isFinite(savedAiLimit) ? Math.min(20, Math.max(0, savedAiLimit)) : 8;
 }
+// Restore user-authored and AI-authored cases, but start with none selected so running never happens by implication.
+// A new workspace deliberately starts with zero testcases; users can add manual cases or request AI-generated ones.
 if (savedWorkspace && Array.isArray(savedWorkspace.testCases)) {
   testCases.push(...savedWorkspace.testCases.filter(testCase => testCase && typeof testCase === 'object' && !(
     testCase.name === 'Example: greeting' && testCase.origin !== 'ai' && !testCase.stdin &&
@@ -102,6 +107,7 @@ function allWorkspaceFiles() {
 function writeWorkspaceSnapshot() {
   if (!codeEditor || !activeWorkspaceId) return;
   try {
+      // Persist editor models, closed tabs, testcase expectations, and per-workspace settings across reloads.
       localStorage.setItem(workspaceStateStorageKey(activeWorkspaceId), JSON.stringify({
         version: 1,
         files: files.map(file => ({id: file.id, name: file.name, language: file.language, contents: file.model.getValue(), generated: Boolean(file.generated)})),
@@ -139,6 +145,7 @@ function writeWorkspaceSnapshot() {
 }
 function persistWorkspace() {
   if (!codeEditor || !activeWorkspaceId) return;
+  // Debounce keystroke persistence so editing stays responsive while reloads still recover recent work.
   clearTimeout(workspaceSaveTimer);
   workspaceSaveTimer = setTimeout(writeWorkspaceSnapshot, 150);
 }
@@ -163,6 +170,7 @@ function renderWorkspaceList() {
       saveWorkspaceCatalog();
       window.location.reload();
     });
+    // Workspace deletion removes its cached state as well as its catalog entry, after an explicit confirmation.
     const deleteButton = createElement('button', 'workspace-delete', 'Delete');
     deleteButton.type = 'button';
     deleteButton.setAttribute('aria-label', `Delete ${workspace.name}`);
@@ -223,6 +231,7 @@ document.querySelector('#new-workspace-name')?.addEventListener('keydown', event
   if (event.key === 'Enter') document.querySelector('#create-project')?.click();
 });
 document.querySelector('#workspace-home')?.addEventListener('click', () => {
+  // Save before returning to the workspace picker so switching projects never discards unsaved browser state.
   writeWorkspaceSnapshot();
   workspaceCatalog.activeId = null;
   activeWorkspaceId = null;
@@ -251,6 +260,7 @@ importInput.multiple = true;
 importInput.accept = '.py,.js,.mjs,.ts,.rb,.go,.java,.c,.h,.cpp,.cc,.hpp,.txt';
 importInput.hidden = true;
 const workspaceHomeButton = document.querySelector('#workspace-home');
+// Keep file import beside workspace navigation; language and run controls stay grouped at the other end of the toolbar.
 const toolbarStart = document.querySelector('.toolbar-start');
 if (toolbarStart) toolbarStart.insertBefore(importButton, document.querySelector('#active-workspace-name'));
 else document.querySelector('.editor-toolbar').insertBefore(importButton, workspaceHomeButton?.nextSibling || runButton);
@@ -282,6 +292,7 @@ async function parseApiResponse(response, fallbackMessage) {
   const body = await response.text();
   let data;
   try {
+    // Show a useful server response for proxy/HTML errors instead of exposing the browser's opaque JSON.parse exception.
     data = body ? JSON.parse(body) : {};
   } catch {
     const preview = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);

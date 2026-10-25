@@ -34,6 +34,7 @@ class WorkspaceFile(BaseModel):
 
 
 class RunRequest(BaseModel):
+    """One isolated program run, including per-case resource limits and named output files to snapshot."""
     language: str = Field("python", pattern="^(python|javascript|typescript|ruby|go|java|c|cpp)$")
     code: str = Field(..., min_length=1, max_length=50000)
     stdin: str = Field("", max_length=10000)
@@ -78,11 +79,13 @@ class HintResponse(BaseModel):
 
 
 class GeneratedFileOverride(BaseModel):
+    """One testcase's temporary contents for a named workspace input file."""
     file_name: str = Field(..., min_length=1, max_length=100)
     contents: str = Field("", max_length=50000)
 
 
 class GeneratedTestCase(BaseModel):
+    """A concrete stdin/file fixture plus stdout expectations for one program run."""
     name: str = Field(..., min_length=1, max_length=80)
     stdin: str = Field("", max_length=10000)
     files: List[GeneratedFileOverride] = Field(default_factory=list, max_length=20)
@@ -90,6 +93,7 @@ class GeneratedTestCase(BaseModel):
 
 
 class GenerateTestCasesRequest(BaseModel):
+    """AI generation context; max_cases caps AI additions only, not the caller's manually authored cases."""
     language: str = Field("python", max_length=30)
     active_file: str = Field("main.py", min_length=1, max_length=100)
     code: str = Field(..., min_length=1, max_length=50000)
@@ -101,6 +105,7 @@ class GenerateTestCasesRequest(BaseModel):
 
 
 class GeneratedCaseStrategy(BaseModel):
+    """A visible recipe and its concrete generated cases; code is explanatory and is never executed by the server."""
     name: str = Field(..., min_length=1, max_length=80)
     description: str = Field("", max_length=500)
     code: str = Field("", max_length=4000)

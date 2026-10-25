@@ -1,3 +1,4 @@
+// Render open tabs separately from the Files panel, which lists every workspace file including closed tabs.
 function renderFileTabs() {
   persistWorkspace();
   fileTabs.querySelectorAll('.file-tab-item').forEach(item => item.remove());
@@ -49,6 +50,7 @@ function renderFileTabs() {
   renderWorkspaceFiles();
 }
 
+// Show each file's current tab state and testcase role so users can reopen it or remove it permanently.
 function renderWorkspaceFiles() {
   const list = document.querySelector('#workspace-files-list');
   const count = document.querySelector('#workspace-files-count');
@@ -94,6 +96,7 @@ function renderWorkspaceFiles() {
   });
 }
 
+// Use one inline rename flow for open and closed files so testcase references follow the renamed workspace file.
 function startFileRename(file, tab) {
   const tabItem = tab.closest('.file-tab-item');
   const input = createElement('input', tabItem ? 'file-tab-rename' : 'workspace-file-rename');
@@ -175,6 +178,7 @@ function selectFile(fileId) {
   outputStatus.textContent = 'Ready';
 }
 
+// Reopening moves the saved file back into the tab strip without recreating or losing its editor model.
 function openWorkspaceFile(fileId) {
   let file = files.find(item => item.id === fileId);
   if (!file) {
@@ -203,6 +207,7 @@ addFileButton.addEventListener('click', () => {
   updateFileControls();
 });
 
+// The tab's X only closes the tab; permanent deletion is a separate, confirmed action in the Files panel.
 function closeFile(fileId) {
   const index = files.findIndex(file => file.id === fileId);
   if (index < 0) return;
@@ -219,6 +224,7 @@ function closeFile(fileId) {
   updateFileControls();
 }
 
+// Permanent removal disposes the editor model and drops testcase fixture references to avoid dangling file names.
 function removeWorkspaceFile(fileId) {
   let index = files.findIndex(file => file.id === fileId);
   let removedFile;
@@ -302,6 +308,7 @@ async function importFiles(importedFiles) {
   updateFileControls();
 }
 
+// Replace generated-output tabs with the latest run's snapshot so stale outputs cannot look current.
 function showGeneratedFiles(generatedFiles) {
   const wasActiveGenerated = files.some(file => file.id === activeFileId && file.generated);
   for (let index = files.length - 1; index >= 0; index -= 1) {

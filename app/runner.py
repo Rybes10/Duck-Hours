@@ -18,11 +18,12 @@ from .schemas import GeneratedWorkspaceFile, RunRequest, RunResponse
 
 
 def safe_file_name(name: str) -> bool:
+    # Restrict workspace files to flat names so student-supplied paths cannot escape the temporary run directory.
     return bool(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", name)) and name not in {".", ".."}
 
 
 def command_for(language: str, active_path: Path, workspace: Path) -> Tuple[Optional[List[str]], Optional[List[str]]]:
-    """Return compile and run commands for the selected source file."""
+    """Map each supported language to its installed local compile/run tools."""
     if language == "python":
         return [sys.executable, "-m", "py_compile", str(active_path)], [sys.executable, str(active_path)]
     if language == "javascript":
@@ -101,7 +102,7 @@ def _kill_process_tree(process: subprocess.Popen, tracked: Sequence[psutil.Proce
 def invoke_with_memory_limit(
     command: Sequence[str], workspace: Path, stdin: str, memory_limit_mb: int
 ) -> Tuple[subprocess.CompletedProcess, Optional[int], bool]:
-    """Run a process tree while sampling its peak resident memory and enforce the cap."""
+    """Run one testcase while sampling the process tree's peak resident memory and enforcing its per-case cap."""
     batch_file = os.name == "nt" and Path(command[0]).suffix.lower() in {".bat", ".cmd"}
     process = subprocess.Popen(
         list(command), cwd=str(workspace), stdin=subprocess.PIPE,
@@ -170,6 +171,7 @@ def response_line(text: str) -> Optional[int]:
 
 
 def collect_workspace_files(workspace: Path, requested_names: Sequence[str] = ()) -> List[GeneratedWorkspaceFile]:
+    # Return a post-run snapshot so callers can tell whether named output targets exist and compare their contents.
     collected: List[GeneratedWorkspaceFile] = []
     paths_by_name = {path.name.casefold(): path for path in workspace.iterdir()}
     requested_keys: set[str] = set()
@@ -194,6 +196,7 @@ def collect_workspace_files(workspace: Path, requested_names: Sequence[str] = ()
 
 
 def collect_generated_files(workspace: Path, existing_names: set[str]) -> List[GeneratedWorkspaceFile]:
+    # Separate new files from the pre-run workspace so the UI can mark true program outputs in green tabs.
     generated: List[GeneratedWorkspaceFile] = []
     for path in sorted(workspace.iterdir()):
         if len(generated) >= 20 or path.name in existing_names or not safe_file_name(path.name):
@@ -208,6 +211,7 @@ def collect_generated_files(workspace: Path, existing_names: set[str]) -> List[G
 
 
 def run_code(payload: RunRequest) -> RunResponse:
+    # Each run gets an isolated temporary workspace; the snapshot lets the browser compare named outputs after execution.
     if len(payload.files) > 20:
         raise HTTPException(status_code=413, detail="A workspace can contain at most 20 files.")
 

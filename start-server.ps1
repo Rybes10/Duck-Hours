@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
+# Use the repository's virtual environment so the app starts with the dependencies installed for this project.
 $projectRoot = $PSScriptRoot
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 

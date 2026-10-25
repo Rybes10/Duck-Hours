@@ -1,3 +1,4 @@
+// Normal runs send the whole workspace snapshot; the active file executes while returned requirement issues stay below the editor.
 runButton.addEventListener('click', async () => {
   if (!codeEditor || !codeEditor.getModel() || files.length === 0) return;
   const runFileId = activeFileId;
@@ -56,6 +57,7 @@ runButton.addEventListener('click', async () => {
   }
 });
 
+// Time and sampled memory limits are per execution, including each individual testcase run.
 function evaluateCaseLimits(elapsedMs, data = {}) {
   const issues = [];
   const timeLimit = Number(document.querySelector('#time-limit').value);

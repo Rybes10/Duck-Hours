@@ -100,6 +100,7 @@ def demo_analysis(payload: AnalyzeRequest) -> Analysis:
 
 
 async def meta_completion(prompt: str) -> str:
+    # Keep provider failures as API errors instead of leaking transport/JSON exceptions as opaque server 500s.
     key = os.getenv("META_API_KEY") or os.getenv("MODEL_API_KEY")
     if not key:
         raise HTTPException(status_code=400, detail="META_API_KEY is not configured. Use Demo mode or add it to .env.")
@@ -169,6 +170,7 @@ Code:\n{code}""".format(language=payload.language, intent=payload.intent,
 
 
 async def generate_test_cases(payload: GenerateTestCasesRequest) -> GenerateTestCasesResponse:
+    # The user's cap is an AI-only ceiling; manual cases are omitted from this request by the browser.
     if payload.max_cases == 0:
         return GenerateTestCasesResponse()
     file_names = sorted({workspace_file.name for workspace_file in payload.files} | {payload.active_file})
@@ -197,6 +199,7 @@ async def generate_test_cases(payload: GenerateTestCasesRequest) -> GenerateTest
         )
         for test_case in payload.existing_cases
     ) or "None"
+    # The model returns inspectable generator recipes plus concrete bounded cases; recipe snippets are display-only, never executed.
     prompt = """Generate useful ADDITIONAL test cases for the provided program, using no more than {max_cases} total cases.
 Return only JSON with this shape: {{"strategies":[{{"name":string,"description":string,"code":string,"cases":[{{"name":string,"stdin":string,"files":[{{"file_name":string,"contents":string}}],"expected_output":string}}]}}]}}.
 Program complexity estimate: {complexity} ({complexity_score} structural signals across {line_count} non-empty source lines).
@@ -234,6 +237,7 @@ Files:\n{files}""".format(
         raise HTTPException(status_code=502, detail="Gemini returned unexpected test cases.") from exc
 
     allowed_names = set(file_names)
+    # Flatten and cap at the service boundary as well as in the UI so malformed/over-eager model output cannot exceed the limit.
     strategy_cases = [test_case for strategy in result.strategies for test_case in strategy.cases]
     all_cases = strategy_cases or result.cases
     for test_case in all_cases:

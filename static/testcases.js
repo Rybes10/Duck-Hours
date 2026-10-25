@@ -1,3 +1,4 @@
+// Build the sidebar's setup, testcase, and workspace-file views in one place so they share saved editor state.
 function setupSidebar() {
   const removeDuplicateSidebars = () => {
     document.querySelectorAll('body > .brief-panel').forEach(duplicate => duplicate.remove());
@@ -82,6 +83,7 @@ function setupSidebar() {
   caseCount.id = 'testcase-count';
   casesHeading.append(caseCount);
   const caseActions = createElement('div', 'testcase-tools');
+  // Cases remain unselected until the user chooses one; manual cases are never counted against the AI generation cap.
   const deselectCaseButton = createElement('button', 'deselect-testcase', 'Deselect');
   deselectCaseButton.type = 'button';
   deselectCaseButton.id = 'deselect-testcase';
@@ -141,6 +143,7 @@ function setupSidebar() {
   actionList.append(clearAiButton, clearAllButton);
   caseActions.append(generateCasesButton, addCaseButton, actionMenu);
   casesHeading.append(caseActions);
+  // This cap limits only AI-created cases and is saved with the workspace so it remains adjustable per project.
   const aiLimitControl = createElement('div', 'testcase-limit-control');
   const aiLimitLabel = createElement('label', '', 'AI case limit');
   aiLimitLabel.htmlFor = 'ai-testcase-limit';
@@ -185,6 +188,7 @@ function setupSidebar() {
   renderTestCases();
 }
 
+// Rebuild the case list and editor from state; an empty or deselected editor stays blank rather than implying a selection.
 function renderTestCases() {
   persistWorkspace();
   const caseList = document.querySelector('#testcase-list');
@@ -405,6 +409,7 @@ function clearTestCases(scope) {
   renderFileTabs();
 }
 
+// Run every case against the same program while applying that case's stdin/file overrides and expected outputs.
 async function runTestCases() {
   const button = document.querySelector('.run-testcases');
   if (!codeEditor || !button || button.disabled || testCases.length === 0) return;
@@ -474,6 +479,7 @@ async function runTestCases() {
         checks.push({name: 'Stdout', status: outputMatches ? 'passed' : 'failed', detail: outputMatches ? 'Matches required output' : 'Does not match required output'});
       }
       const generatedFiles = data.generated_files || [];
+      // Required file checks inspect the post-run workspace snapshot and fail when a named target is absent; they never fall back to editor contents.
       const hasWorkspaceSnapshot = Array.isArray(data.workspace_files);
       const workspaceFiles = hasWorkspaceSnapshot ? data.workspace_files : generatedFiles;
       const filesAfterRunByName = new Map(workspaceFiles.map(file => [String(file.name || '').trim().toLowerCase(), file.contents || '']));
@@ -538,6 +544,7 @@ function evaluateTestCaseConstraints(elapsedMs) {
   return checks;
 }
 
+// Send only prior AI cases as model context; manual testcase contents remain private and do not consume the AI cap.
 async function generateTestCases() {
   const button = document.querySelector('.generate-testcases');
   const status = document.querySelector('#testcase-generator-status');
@@ -579,6 +586,7 @@ async function generateTestCases() {
       })
     });
     const data = await parseApiResponse(response, 'Could not generate test cases.');
+    // Keep the strategy recipe with each concrete case so users can inspect why random/boundary/repeated inputs were chosen.
     const strategyCases = (data.strategies || []).flatMap(strategy => (strategy.cases || []).map(generatedCase => ({
       generatedCase,
       strategy: {name: strategy.name, description: strategy.description, code: strategy.code}
@@ -624,6 +632,7 @@ async function generateTestCases() {
   }
 }
 
+// Normalize platform newlines and ignore only trailing line breaks so copy/pasted output compares predictably.
 function normalizeOutput(value) {
   return String(value || '').replace(/\r\n/g, '\n').trimEnd();
 }

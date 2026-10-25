@@ -1,3 +1,4 @@
+// Rebuild Monaco models from the saved workspace before showing tabs, preserving closed files without opening them automatically.
 require(['vs/editor/editor.main'], () => {
   if (savedWorkspace && Array.isArray(savedWorkspace.files)) {
     savedWorkspace.files.slice(0, 20).forEach(file => {
