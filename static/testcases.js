@@ -1169,6 +1169,9 @@ async function generateTestCases() {
       expectedOutputProvided: Boolean(data.target_is_main || isVoidReturnType(generatedCase.return_type || data.return_type) || generatedCase.expected_output),
       invocation: generatedCase.invocation || '',
       expectedReturn: generatedCase.expected_return ?? '',
+      // `""` is a valid expected return for a string method. Only null or
+      // undefined means that the generator did not provide a return value.
+      expectedReturnProvided: generatedCase.expected_return !== null && generatedCase.expected_return !== undefined,
       returnType: generatedCase.return_type || data.return_type || '',
       isMain: Boolean(data.target_is_main),
       harnessFile: generatedCase.harness_file || data.harness_file || '',

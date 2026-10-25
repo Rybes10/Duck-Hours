@@ -4,7 +4,7 @@ import ast
 import json
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import httpx
 from dotenv import load_dotenv
@@ -544,6 +544,72 @@ Complexity signals: {complexity_score} across {line_count} non-empty lines ({com
         line_count=len(source_lines),
         complexity=complexity,
     )
+
+    def local_starter_cases() -> Tuple[List[GeneratedTestCase], List[GeneratedCaseStrategy], Optional[str], Optional[dict]]:
+        """Create safe input starters when the external generator is unavailable."""
+        if payload.language != "python" or not method_target:
+            return [], [], "The external test service is unavailable. Add a manual test or try again.", None
+        try:
+            tree = ast.parse(payload.code)
+        except SyntaxError:
+            return [], [], "The selected method must be valid before tests can be generated.", None
+        function_name = target.get("function_name") or target.get("method_name")
+        node = next(
+            (candidate for candidate in ast.walk(tree)
+             if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and candidate.name == function_name),
+            None,
+        )
+        if node is None:
+            return [], [], "The selected method could not be prepared for local test generation.", None
+        def sample_values(argument: ast.arg) -> List[str]:
+            annotation = ""
+            if argument.annotation is not None:
+                try:
+                    annotation = ast.unparse(argument.annotation).lower()
+                except AttributeError:
+                    annotation = ""
+            name = argument.arg.lower()
+            if "bool" in annotation or name.startswith(("is_", "has_", "should_")):
+                return ["True", "False"]
+            if any(token in annotation for token in ("str", "text", "string")) or name in {"name", "text", "word", "message"}:
+                return [repr("office hours"), repr("")]
+            if any(token in annotation for token in ("list", "tuple", "set", "sequence")) or name.endswith("s"):
+                return ["[1, 2, 3]", "[]"]
+            if "float" in annotation or name in {"average", "amount", "price", "ratio"}:
+                return ["1.5", "0.0", "-2.25"]
+            return ["0", "1", "-1", "2"]
+        arguments = list(node.args.posonlyargs) + list(node.args.args)
+        samples = [sample_values(argument) for argument in arguments]
+        calls = []
+        for index in range(generation_count):
+            values = [options[(index + position) % len(options)] for position, options in enumerate(samples)]
+            call = "{}({})".format(function_name, ", ".join(values))
+            if target.get("class_name") and not target.get("static_method"):
+                call = "{}().{}".format(target["class_name"], call)
+            if call not in calls:
+                calls.append(call)
+        cases = [GeneratedTestCase(
+            name="Local starter case {}".format(index + 1),
+            description="Inputs were prepared locally. Confirm the expected result from the program purpose before treating this as a verified test.",
+            invocation=call,
+            expected_return=None,
+            return_type=target.get("return_type"),
+        ) for index, call in enumerate(calls)]
+        harness = build_harness_code(target, payload.active_file, calls) if calls else None
+        for case in cases:
+            if harness:
+                case.harness_file = harness["file"]
+                case.harness_code = harness["code"]
+        strategy = GeneratedCaseStrategy(
+            name="Local starter inputs",
+            description="The external generator was unavailable, so these inputs are not AI-verified.",
+            code="",
+            cases=cases,
+        )
+        message = "The external test service was unavailable. Local starter cases were added; confirm expected results before running them."
+        return cases, [strategy] if cases else [], message, harness
+
     try:
         text = await meta_completion(prompt)
         text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
@@ -564,9 +630,21 @@ Complexity signals: {complexity_score} across {line_count} non-empty lines ({com
         if message:
             message = neutralize_provider_language(message)
     except HTTPException as exc:
+        fallback_cases, fallback_strategies, fallback_message, fallback_harness = local_starter_cases()
+        if fallback_cases:
+            return GenerateTestCasesResponse(
+                cases=fallback_cases,
+                strategies=fallback_strategies,
+                generated_count=len(fallback_cases),
+                complete=False,
+                message=fallback_message,
+                harness_file=fallback_harness["file"] if fallback_harness else None,
+                harness_code=fallback_harness["code"] if fallback_harness else None,
+                **base_response,
+            )
         return GenerateTestCasesResponse(
             cases=[],
-            message="Test generation could not finish: {}".format(exc.detail),
+            message=fallback_message or "Test generation could not finish: {}".format(exc.detail),
             **base_response,
         )
     except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as exc:
