@@ -1,7 +1,19 @@
 .env
+.env/
 .env.*
 !.env.example
-.env.example
+.envrc
+
+# Local cloud credentials and private keys.
+.aws/
+.azure/
+.ssh/
+credentials
+credentials.*
+secrets/
+*.pem
+*.key
+
 __pycache__/
 *.py[cod]
 .pytest_cache/
