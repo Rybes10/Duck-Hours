@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 
 class AnalyzeRequest(BaseModel):
+    """Code and optional run context sent to the analysis service."""
+
     intent: str = Field("", max_length=5000)
     code: str = Field(..., min_length=1, max_length=50000)
     problem: str = Field("", max_length=5000)
@@ -15,6 +17,8 @@ class AnalyzeRequest(BaseModel):
 
 
 class Issue(BaseModel):
+    """One actionable finding reported by an analysis."""
+
     category: str
     title: str
     explanation: str
@@ -24,6 +28,8 @@ class Issue(BaseModel):
 
 
 class Analysis(BaseModel):
+    """Summary, findings, and learning prompts returned after analysis."""
+
     mode: str
     summary: str
     issues: List[Issue]
@@ -31,11 +37,15 @@ class Analysis(BaseModel):
 
 
 class WorkspaceFile(BaseModel):
+    """A named source file included alongside the active editor file."""
+
     name: str = Field(..., min_length=1, max_length=100)
     code: str = Field("", max_length=50000)
 
 
 class RunRequest(BaseModel):
+    """Inputs and execution limits for a local workspace run."""
+
     language: str = Field("python", pattern="^(python|javascript|typescript|ruby|go|java|c|cpp)$")
     code: str = Field(..., min_length=1, max_length=50000)
     stdin: str = Field("", max_length=10000)
@@ -51,11 +61,15 @@ class RunRequest(BaseModel):
 
 
 class GeneratedWorkspaceFile(BaseModel):
+    """A safe text file collected from the temporary run workspace."""
+
     name: str
     contents: str
 
 
 class RunResponse(BaseModel):
+    """Execution result with diagnostics and generated workspace artifacts."""
+
     language: str
     status: str
     output: str
@@ -81,6 +95,8 @@ class RunResponse(BaseModel):
 
 
 class HintRequest(BaseModel):
+    """Code and diagnostics used to produce one focused debugging hint."""
+
     language: str = Field("python", max_length=30)
     code: str = Field(..., min_length=1, max_length=50000)
     intent: str = Field("", max_length=5000)
@@ -97,10 +113,14 @@ class Hint(BaseModel):
 
 
 class HintResponse(BaseModel):
+    """A collection of source-line-specific debugging hints."""
+
     hints: List[Hint]
 
 
 class FixRequest(BaseModel):
+    """Inputs and diagnostics used to request a focused code repair."""
+
     language: str = Field("python", max_length=30)
     code: str = Field(..., min_length=1, max_length=50000)
     intent: str = Field("", max_length=5000)
@@ -109,16 +129,22 @@ class FixRequest(BaseModel):
 
 
 class FixResponse(BaseModel):
+    """Replacement source and a brief explanation of the requested repair."""
+
     code: str = Field(..., min_length=1, max_length=50000)
     explanation: str = Field(..., max_length=5000)
 
 
 class GeneratedFileOverride(BaseModel):
+    """Per-case content that overrides a file in the submitted workspace."""
+
     file_name: str = Field(..., min_length=1, max_length=100)
     contents: str = Field("", max_length=50000)
 
 
 class GeneratedTestCase(BaseModel):
+    """One generated test input and its expected observable result."""
+
     name: str = Field(..., min_length=1, max_length=80)
     description: Optional[str] = Field(None, max_length=500)
     stdin: str = Field("", max_length=10000)
@@ -132,6 +158,8 @@ class GeneratedTestCase(BaseModel):
 
 
 class GenerateTestCasesRequest(BaseModel):
+    """Target, constraints, and preferences for generating additional tests."""
+
     language: str = Field("python", max_length=30)
     active_file: str = Field("main.py", min_length=1, max_length=100)
     code: str = Field(..., min_length=1, max_length=50000)
@@ -150,6 +178,8 @@ class GenerateTestCasesRequest(BaseModel):
 
 
 class TestTargetRequest(BaseModel):
+    """Editor selection metadata used to identify a testable code target."""
+
     language: str = Field("python", max_length=30)
     active_file: str = Field("main.py", min_length=1, max_length=100)
     code: str = Field(..., min_length=1, max_length=50000)
@@ -160,6 +190,8 @@ class TestTargetRequest(BaseModel):
 
 
 class GeneratedCaseStrategy(BaseModel):
+    """A named rationale grouping related generated test cases."""
+
     name: str = Field(..., min_length=1, max_length=80)
     description: str = Field("", max_length=500)
     code: str = Field("", max_length=4000)
@@ -167,6 +199,8 @@ class GeneratedCaseStrategy(BaseModel):
 
 
 class GenerateTestCasesResponse(BaseModel):
+    """Generated cases plus target readiness and completeness information."""
+
     cases: List[GeneratedTestCase]
     strategies: List[GeneratedCaseStrategy] = Field(default_factory=list, max_length=10)
     requested_count: int = 5
@@ -188,6 +222,8 @@ class GenerateTestCasesResponse(BaseModel):
 
 
 class BuildTestHarnessRequest(BaseModel):
+    """Selected source and invocation used to create a runnable test wrapper."""
+
     language: str = Field("python", max_length=30)
     active_file: str = Field("main.py", min_length=1, max_length=100)
     code: str = Field(..., min_length=1, max_length=50000)
@@ -199,6 +235,8 @@ class BuildTestHarnessRequest(BaseModel):
 
 
 class BuildTestHarnessResponse(BaseModel):
+    """Readiness status and source for a generated test wrapper."""
+
     ready: bool
     message: Optional[str] = None
     target_kind: str = "invalid"

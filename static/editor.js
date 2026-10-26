@@ -8,6 +8,7 @@ function renderFileTabs() {
   if (files.length === 0) {
     fileTabs.insertBefore(createElement('span', 'file-tabs-empty', 'No files open'), addFileButton);
   }
+  // Mark tabs that are referenced by test inputs or expected output checks.
   const fixtureNames = new Set(testCases.flatMap(testCase => testCase.files.map(fixture => fixture.fileName).filter(Boolean)));
   const outputNames = new Set(testCases.flatMap(testCase => testCase.expectedFiles.map(file => String(file.name || '').trim().toLowerCase()).filter(Boolean)));
   files.forEach(file => {
@@ -112,6 +113,7 @@ function startFileRename(file, label) {
       return;
     }
     const requestedName = input.value.trim();
+    // Reject path-like or otherwise unsupported names before changing workspace references.
     if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/.test(requestedName) || requestedName === '.' || requestedName === '..') {
       input.setAttribute('aria-invalid', 'true');
       input.title = 'Use a name with letters, numbers, dots, dashes, or underscores.';
@@ -148,6 +150,7 @@ function applyFileRename(file, requestedName) {
     }
   }
   testCases.forEach(testCase => {
+    // Keep test fixtures and expected outputs attached to the renamed file.
     testCase.files.forEach(fixture => {
       if (fixture.fileName === previousName) fixture.fileName = file.name;
     });
@@ -212,6 +215,7 @@ function closeFile(fileId) {
   const index = files.findIndex(file => file.id === fileId);
   if (index < 0) return;
   const [closedFile] = files.splice(index, 1);
+  // Closing keeps the model in the workspace so it can be reopened later.
   closedFiles.push(closedFile);
   if (activeFileId === fileId && files.length > 0) {
     const nextFile = files.find(file => !file.generated) || files[Math.min(index, files.length - 1)];
@@ -286,6 +290,7 @@ function uniqueFileName(candidate, exceptFileId = null) {
   const extension = dot > 0 ? cleaned.slice(dot) : '';
   let name = cleaned;
   let suffix = 2;
+  // Include closed files in the check so every workspace name stays unique.
   while (allWorkspaceFiles().some(file => file.id !== exceptFileId && file.name === name)) {
     name = `${stem}-${suffix}${extension}`;
     suffix += 1;
@@ -327,6 +332,7 @@ function showGeneratedFiles(generatedFiles) {
     languageSelect.disabled = false;
     if (nextFile) languageSelect.value = currentLanguage;
   }
+  // Replace prior run outputs before adding the new generated files.
   for (let index = files.length - 1; index >= 0; index -= 1) {
     if (!files[index].generated) continue;
     files[index].model.dispose();

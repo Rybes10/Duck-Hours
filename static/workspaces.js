@@ -10,6 +10,7 @@ try {
 }
 if (!workspaceCatalog || workspaceCatalog.version !== 1 || !Array.isArray(workspaceCatalog.workspaces)) {
   workspaceCatalog = {version: 1, activeId: null, workspaces: []};
+  // Migrate the earlier single-workspace save into the new workspace catalog.
   const legacyState = localStorage.getItem(legacyWorkspaceKey);
   if (legacyState) {
     const legacyWorkspace = {id: 'workspace-default', name: 'My workspace', updatedAt: new Date().toISOString()};
@@ -54,6 +55,7 @@ if (savedWorkspace?.settings) {
 if (Array.isArray(savedWorkspace?.testCases)) {
   for (const item of savedWorkspace.testCases) {
     if (!item || typeof item !== 'object') continue;
+    // Persist test definitions, but reset transient execution state after reload.
     testCases.push({
       ...item,
       files: Array.isArray(item.files) ? item.files : [],
@@ -98,6 +100,7 @@ function saveWorkspaceNow() {
 }
 
 function persistWorkspace() {
+  // Batch rapid edits into one localStorage write.
   clearTimeout(workspaceSaveTimer);
   workspaceSaveTimer = setTimeout(saveWorkspaceNow, 180);
 }
@@ -163,6 +166,7 @@ function renderStartWorkspaces() {
 }
 
 function openWorkspace(workspaceId) {
+  // Save the current workspace before switching the active id and reloading its state.
   saveWorkspaceNow();
   workspaceCatalog.activeId = workspaceId;
   localStorage.setItem(workspaceCatalogKey, JSON.stringify(workspaceCatalog));

@@ -62,6 +62,7 @@ runButton.addEventListener('click', async () => {
   lastRun = null;
   clearHints();
   try {
+    // Keep the source and selected language together in the run request.
     const response = await fetch('/api/run', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
       language: currentLanguage, code: codeEditor.getValue(), stdin: '', intent: document.querySelector('#intent').value
     })});
@@ -87,6 +88,7 @@ function showRunResult(data) {
     return;
   }
   if (data.status === 'compile_error') {
+    // Offer hints only for compile errors, which can identify a source line.
     output.className = 'output-box error';
     output.innerHTML = '<span class="output-title">Your code has run into an issue.</span><button id="hint" class="hint-button" type="button">? Give me a hint</button>';
     outputStatus.textContent = 'Needs attention';
@@ -110,6 +112,7 @@ async function requestHint() {
       code: codeEditor.getValue(),
       intent: document.querySelector('#intent').value,
       compiler_error: lastRun.output || lastRun.error || '',
+      // The backend may not be able to associate every error with a line.
       line: lastRun.line || null
     })});
     const data = await response.json();
@@ -131,6 +134,7 @@ async function requestHint() {
 
 function showHints(hints) {
   const model = codeEditor.getModel();
+  // Replace existing decorations so repeated hints do not accumulate markers.
   hintDecorations = codeEditor.deltaDecorations(hintDecorations, hints.map(hint => ({
     range: new monaco.Range(hint.line, 1, hint.line, 1),
     options: {

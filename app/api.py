@@ -1,4 +1,4 @@
-"""Compatibility export for the application API router."""
+"""Re-export the route definitions through the ``app.api`` import path."""
 
 from .routes import router
 

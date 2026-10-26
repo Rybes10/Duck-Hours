@@ -13,6 +13,7 @@ runButton.addEventListener('click', async () => {
   clearHints();
   monaco.editor.setModelMarkers(codeEditor.getModel(), 'office-hours-prep', []);
   try {
+    // Send the full non-generated workspace so multi-file programs run together.
     const response = await fetch('/api/run', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
       language: currentLanguage,
       code: codeEditor.getValue(),
@@ -24,6 +25,7 @@ runButton.addEventListener('click', async () => {
       intent: getRunIntent()
     })});
     const data = await parseApiResponse(response, 'The code could not be run.');
+    // Ignore a delayed result if the user switched files while the request was running.
     if (activeFileId !== runFileId) return;
     showGeneratedFiles(data.generated_files || []);
     lastRun = data;
@@ -67,6 +69,7 @@ function setCheckStatus(id, state, message) {
 
 function evaluateRunChecks(elapsedMs, runSucceeded, data = {}) {
   const memoryLimit = document.querySelector('#memory-limit').value;
+  // Report measured usage when available; otherwise distinguish an unmeasured check.
   const measuredMb = Number.isFinite(data.memory_usage_bytes) ? (data.memory_usage_bytes / (1024 * 1024)).toFixed(1) : null;
   setCheckStatus('check-memory', !memoryLimit ? 'idle' : data.memory_limit_exceeded ? 'fail' : measuredMb ? 'pass' : 'review',
     !memoryLimit ? 'Not set' : data.memory_limit_exceeded ? `Over · ${measuredMb} MB` : measuredMb ? `${measuredMb} MB` : 'Not measured');
@@ -175,6 +178,7 @@ function activeFileName() {
 }
 
 function isDependencyError(data) {
+  // A failure in another workspace file should direct the user to that dependency.
   return data?.error_source === 'dependency'
     || (data?.error_file && data.error_file !== activeFileName() && data.error_source !== 'harness');
 }
@@ -267,6 +271,7 @@ function showRunResult(data, previousIssue) {
 }
 
 async function checkLogicAfterRun(previousIssue) {
+  // Allow users to skip the AI check while still reporting the observed run result.
   if (document.querySelector('#skip-logic')?.checked) {
     activeIssue = null;
     if (previousIssue && issueColorClass(previousIssue.category) !== 'logic') {
@@ -296,6 +301,7 @@ async function checkLogicAfterRun(previousIssue) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || 'The logic check could not finish.');
+    // "Understand" is informational, not a remaining logic issue to display.
     const issues = (data.issues || []).filter(issue => issue?.category && issue.category.toLowerCase() !== 'understand');
     if (issues.length) {
       const stillThere = previousIssue && issues.some(issue => sameIssue(previousIssue, issue));
@@ -328,6 +334,7 @@ async function checkLogicAfterRun(previousIssue) {
 function sameIssue(previousIssue, issue) {
   if (!previousIssue || !issue) return false;
   const sameCategory = issueColorClass(previousIssue.category) === issueColorClass(issue.category);
+  // Match by source line where possible, with title as a fallback for line-less findings.
   const sameLine = previousIssue.line && issue.line && previousIssue.line === issue.line;
   const previousTitle = String(previousIssue.title || '').toLowerCase();
   const nextTitle = String(issue.title || '').toLowerCase();
@@ -441,6 +448,7 @@ async function requestFix() {
 
 function showHints(hints) {
   const model = codeEditor.getModel();
+  // Ignore hints that point outside the current editor model.
   const validHints = hints.filter(hint => Number.isInteger(hint.line) && hint.line >= 1 && hint.line <= model.getLineCount()).slice(0, 1);
   if (!validHints.length) return false;
   hintDecorations = codeEditor.deltaDecorations(hintDecorations, validHints.map(hint => ({

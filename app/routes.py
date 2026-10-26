@@ -108,6 +108,7 @@ async def build_test_harness(payload: BuildTestHarnessRequest) -> BuildTestHarne
         selection_start_column=payload.selection_start_column,
         selection_end_column=payload.selection_end_column,
     )
+    # Harnesses are only meaningful for complete callable targets.
     if target.get("kind") not in {"function", "method"} or not target.get("ready"):
         return BuildTestHarnessResponse(
             ready=False,

@@ -21,6 +21,7 @@ from .test_targets import build_harness_code, default_function_invocation, detec
 
 
 def safe_file_name(name: str) -> bool:
+    """Accept only simple workspace basenames, never paths."""
     return bool(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", name)) and name not in {".", ".."}
 
 
@@ -117,6 +118,7 @@ def _required_source_names(language: str, active_name: str, sources: Dict[str, s
                 if declared in identifiers - current_declarations
             )
 
+        # Walk newly found files too, so dependencies can be transitive.
         for dependency in dependencies:
             if dependency not in required:
                 required.append(dependency)
@@ -296,6 +298,7 @@ def invoke_with_memory_limit(
     except psutil.Error:
         pass
     while reader.is_alive():
+        # Sample descendants as well as the root because submitted programs may spawn children.
         root = tracked.get(process.pid)
         if root is not None:
             try:
@@ -388,7 +391,7 @@ def _sample_values(argument: ast.arg) -> List[str]:
 
 
 def standalone_python_plan(source: str) -> Optional[Tuple[str, List[str], int, bool]]:
-    """Return a hidden call plan when a top-level function has no caller."""
+    """Prepare sample calls for a top-level function that the source never invokes."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -401,6 +404,8 @@ def standalone_python_plan(source: str) -> Optional[Tuple[str, List[str], int, b
     calls_by_function: Dict[Optional[str], set[str]] = {}
 
     class CallCollector(ast.NodeVisitor):
+        """Track calls by enclosing function to distinguish entry points."""
+
         def __init__(self) -> None:
             self.current_function: Optional[str] = None
 
@@ -534,6 +539,7 @@ def likely_non_terminating_line(
 
 
 def collect_generated_files(workspace: Path, existing_names: set[str]) -> List[GeneratedWorkspaceFile]:
+    """Collect newly created small text files, excluding workspace inputs."""
     generated: List[GeneratedWorkspaceFile] = []
     for path in sorted(workspace.iterdir()):
         if len(generated) >= 20 or path.name in existing_names or not safe_file_name(path.name):
@@ -567,6 +573,7 @@ def collect_workspace_files(workspace: Path, requested_names: Sequence[str]) -> 
 
 
 def run_code(payload: RunRequest) -> RunResponse:
+    """Validate a workspace, execute it in isolation, and translate its result."""
     if len(payload.files) > 20:
         raise HTTPException(status_code=413, detail="A workspace can contain at most 20 files.")
 

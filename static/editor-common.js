@@ -1,6 +1,7 @@
 if (window.__officeHoursPrepEditorLoaded) {
   throw new Error('Duplicate Office Hours Prep editor script ignored.');
 }
+// Other editor scripts rely on this guard to avoid initializing the UI twice.
 window.__officeHoursPrepEditorLoaded = true;
 
 let codeEditor = null;
@@ -8,6 +9,7 @@ let currentLanguage = 'python';
 let activeFileId = 'file-0';
 let nextFileNumber = 1;
 const files = [];
+// Closed tabs remain in the workspace so they can be reopened without losing edits.
 const closedFiles = [];
 const runButton = document.querySelector('#run');
 const output = document.querySelector('#output');
@@ -54,6 +56,7 @@ document.querySelector('label[for="constraints"]').textContent = 'Rules to follo
 document.querySelector('#constraints').placeholder = 'For example: the list may be empty.';
 document.querySelector('#constraints').nextElementSibling.textContent = 'Add any special rules or edge cases.';
 function growSuggestionBox(field) {
+  // Reset first so the field can shrink as well as grow with its content.
   field.style.height = 'auto';
   field.style.height = `${field.scrollHeight}px`;
 }
@@ -85,11 +88,13 @@ function createElement(tagName, className, text) {
 }
 
 function escapeHtml(value) {
+  // Escape dynamic text before it is inserted into HTML.
   return String(value).replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
 }
 
 function startAiProgress(element, label) {
   if (!element) return () => {};
+  // Return a cleanup function so callers can stop the timer when work completes.
   const startedAt = performance.now();
   const update = () => {
     const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
@@ -104,6 +109,7 @@ async function parseApiResponse(response, fallbackMessage) {
   const body = await response.text();
   let data;
   try {
+    // Read the body once, then normalize empty responses to an object.
     data = body ? JSON.parse(body) : {};
   } catch {
     throw new Error(`The server returned an unexpected response (${response.status}).`);

@@ -2,6 +2,7 @@ const editorHeightStorageKey = 'office-hours-prep.editor-height.v1';
 const editorMinimumHeight = 240;
 const editorMaximumHeight = 900;
 
+// A saved height may be unavailable when storage is disabled or inaccessible.
 function readEditorHeight() {
   try {
     const raw = localStorage.getItem(editorHeightStorageKey);
@@ -15,6 +16,7 @@ function readEditorHeight() {
 
 function editorHeightLimit() {
   const viewportHeight = window.innerHeight || 800;
+  // Keep the editor within the viewport while respecting the configured bounds.
   return Math.max(editorMinimumHeight, Math.min(editorMaximumHeight, Math.floor(viewportHeight * 0.9)));
 }
 
@@ -32,6 +34,7 @@ function setEditorHeight(height, {save = true} = {}) {
   editorCard.classList.add('editor-height-resized');
   editorCard.style.setProperty('--code-editor-height', `${nextHeight}px`);
   updateEditorResizeHandle(handle, nextHeight);
+  // Skip saving when restoring a saved height or reacting to a viewport resize.
   if (save) {
     try { localStorage.setItem(editorHeightStorageKey, String(nextHeight)); } catch {}
   }
@@ -53,6 +56,7 @@ function setupEditorVerticalResizing() {
   const savedHeight = readEditorHeight();
   if (savedHeight !== null) setEditorHeight(savedHeight, {save: false});
 
+  // Pointer dragging and keyboard controls share the same resize behavior.
   let resizeState = null;
   const finishResize = event => {
     if (!resizeState) return;
@@ -91,6 +95,7 @@ function setupEditorVerticalResizing() {
 }
 
 require(['vs/editor/editor.main'], () => {
+  // Rebuild the saved workspace when available; otherwise start with the Python example.
   if (savedWorkspace && Array.isArray(savedWorkspace.files)) {
     for (const record of savedWorkspace.files.slice(0, 20)) {
       if (!record || typeof record.name !== 'string' || typeof record.language !== 'string') continue;
@@ -141,6 +146,7 @@ require(['vs/editor/editor.main'], () => {
     markTestCasesOutdated();
     window.scheduleTestTargetValidation?.();
   });
+  // Keep the workspace persisted and generated test context in sync with edits.
   codeEditor.onDidChangeModelContent(() => {
     markTestCasesOutdated();
     persistWorkspace();

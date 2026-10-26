@@ -17,6 +17,7 @@ HARNESS_LANGUAGES = {"python", "javascript", "java", "ruby", "go", "cpp"}
 
 
 def _line_slice(source: str, start: Optional[int], end: Optional[int]) -> str:
+    """Return a bounded, 1-based inclusive slice of source lines."""
     lines = source.splitlines()
     if not lines:
         return ""
@@ -37,6 +38,7 @@ def _python_target(
     selection_start_column: Optional[int],
     selection_end_column: Optional[int],
 ) -> Dict[str, Any]:
+    """Use Python's AST to recognize a whole function or an observable fragment."""
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
@@ -210,6 +212,7 @@ def _python_target(
 
 
 def _java_methods(code: str) -> List[Dict[str, Any]]:
+    """Extract method spans so selections can be checked for completeness."""
     method_pattern = re.compile(
         r"(?P<prefix>(?:(?:public|private|protected|static|final|synchronized|abstract)\s+)*)"
         r"(?P<return>[A-Za-z_$][\w$]*(?:\s*\[\])*)\s+"
@@ -414,6 +417,7 @@ def _generic_target(
     selection_start_column: Optional[int],
     selection_end_column: Optional[int],
 ) -> Dict[str, Any]:
+    """Apply lightweight signature and selection checks for non-AST languages."""
     function_pattern = {
         "javascript": r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\(",
         "typescript": r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\(",
@@ -553,7 +557,7 @@ def _java_sample_arguments(params: str) -> Optional[List[str]]:
 
 
 def build_harness_code(target: Dict[str, Any], active_file: str, invocations: Iterable[str]) -> Optional[Dict[str, str]]:
-    """Build a separate inspectable wrapper for function/method cases."""
+    """Build an inspectable wrapper without modifying the submitted source."""
     calls = [str(invocation).strip() for invocation in invocations if str(invocation).strip()]
     if target.get("kind") == "fragment" and target.get("language") == "python" and target.get("fragment_code"):
         padding = "\n" * max(0, int(target.get("selection_start_line") or 1) - 1)
@@ -667,6 +671,7 @@ def build_harness_code(target: Dict[str, Any], active_file: str, invocations: It
         submitted_function_code = str(target.get("selected_function_code") or "")
         submitted_main_name = "__office_hours_submitted_main"
         if target.get("is_main"):
+            # The wrapper owns the executable entry point, so rename the selected one.
             submitted_function_code = re.sub(
                 r"\bfunc\s+main\s*\(",
                 f"func {submitted_main_name}(",
@@ -801,6 +806,7 @@ def build_harness_code(target: Dict[str, Any], active_file: str, invocations: It
                 lines.append(f"    {expression};")
                 continue
             if return_type.endswith("[]"):
+                # Primitive arrays need Arrays.toString; nested/object arrays use the deep variant.
                 element_type = return_type[:-2]
                 if element_type.endswith("[]"):
                     rendered = f"java.util.Arrays.deepToString((Object[]) ({expression}))"

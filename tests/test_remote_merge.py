@@ -12,9 +12,12 @@ from app.schemas import AnalyzeRequest, GenerateTestCasesRequest, HintRequest, R
 
 
 class RunnerFileTests(unittest.TestCase):
+    """Cover workspace file isolation, dependency errors, and execution limits."""
+
     def test_run_compiles_only_the_active_cpp_file(self) -> None:
         if not shutil.which("g++"):
             self.skipTest("g++ is not installed")
+        # An unrelated broken file should not prevent the active source from running.
         result = run_code(RunRequest(
             language="cpp",
             active_file="main.cpp",
@@ -296,6 +299,8 @@ class RunnerFileTests(unittest.TestCase):
 
 
 class LogicAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    """Check that analysis and hints stay grounded and avoid exposing provider wording."""
+
     def test_provider_language_is_removed_from_explanations(self) -> None:
         cleaned = neutralize_provider_language("Meta found this. As an AI, I think the model should check it. The AI-generated note is short.")
         self.assertNotIn("meta", cleaned.lower())
@@ -421,6 +426,8 @@ class LogicAnalysisTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GeneratedStrategyTests(unittest.IsolatedAsyncioTestCase):
+    """Exercise selected-target validation and generated harness contracts."""
+
     async def test_target_preflight_rejects_partial_method_without_calling_model(self) -> None:
         from app.routes import testcase_target
 

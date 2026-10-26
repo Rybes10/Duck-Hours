@@ -351,6 +351,7 @@ async function validateSelectedTestTarget(sequence, key, payload) {
       body: JSON.stringify(payload),
     });
     const data = await parseApiResponse(response, 'Could not check the selected code.');
+    // Ignore validation results for a selection that has since changed.
     if (sequence !== targetValidationSequence || key !== testSelectionKey()) return;
     const kind = data.target_kind || data.kind;
     const ready = Boolean(data.target_ready) && ['function', 'method'].includes(kind);
@@ -403,6 +404,7 @@ function scheduleTestTargetValidation(immediate = false) {
   }
   updateGenerateTestButtonState();
   const run = () => validateSelectedTestTarget(sequence, key, payload);
+  // Debounce editor changes so rapid cursor or selection updates do not flood the API.
   if (immediate) run();
   else targetValidationTimer = window.setTimeout(run, 160);
 }
@@ -410,6 +412,7 @@ function scheduleTestTargetValidation(immediate = false) {
 window.scheduleTestTargetValidation = scheduleTestTargetValidation;
 
 function captureTestSnapshot() {
+  // Tie generated tests to the exact code, selection, and generation context they describe.
   const selection = codeEditor?.getSelection?.();
   const selected = Boolean(selection && !selection.isEmpty());
   return JSON.stringify({
@@ -568,6 +571,7 @@ function addCustomTestCase() {
 }
 
 async function prepareCustomHarness(testCase) {
+  // Reuse the generated wrapper until edits invalidate it.
   if (testCase.harnessCode) return true;
   const activeFile = files.find(file => file.id === activeFileId && !file.generated) || files.find(file => !file.generated);
   const selection = codeEditor?.getSelection?.();
@@ -861,6 +865,7 @@ async function runTestCases(onlyTestCaseId = null) {
   }
   const selectedBeforeRun = selectedTestCaseId;
   markTestCasesOutdated();
+  // Use one snapshot for the batch so cases cannot silently run against changed code.
   const runSnapshot = captureTestSnapshot();
   document.body.classList.add('testcase-results-open');
   button.disabled = true;
@@ -906,6 +911,7 @@ async function runTestCases(onlyTestCaseId = null) {
         renderTestCases();
         continue;
       }
+      // Apply each test's file fixtures to a request-local copy, not the editor models.
       const overrides = new Map();
       for (const fixture of testCase.files) {
         if (!fixture.fileName) throw new Error('Choose a target editor file for each file override.');
@@ -1223,6 +1229,7 @@ function normalizeOutput(value) {
 }
 
 function stripOuterReturnParentheses(value) {
+  // Remove only balanced wrapper parentheses, not parentheses inside strings or expressions.
   let text = String(value ?? '').trim();
   while (text.startsWith('(') && text.endsWith(')')) {
     let depth = 0;
@@ -1355,6 +1362,7 @@ function typedValuesEqual(left, right) {
   if (left.type === 'number') {
     const a = Number(left.value); const b = Number(right.value);
     if (!Number.isFinite(a) || !Number.isFinite(b)) return Object.is(a, b);
+    // Allow small floating-point representation differences in numeric results.
     const tolerance = 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
     return Math.abs(a - b) <= tolerance;
   }

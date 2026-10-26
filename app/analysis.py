@@ -31,6 +31,7 @@ def neutralize_provider_language(text: str) -> str:
 
 
 def neutralize_analysis_text(result: Analysis) -> Analysis:
+    """Remove provider-specific wording in place before returning an analysis."""
     result.summary = neutralize_provider_language(result.summary)
     result.walkthrough = [neutralize_provider_language(step) for step in result.walkthrough]
     for issue in result.issues:
@@ -152,6 +153,7 @@ def demo_analysis(payload: AnalyzeRequest) -> Analysis:
 
 
 async def meta_completion(prompt: str) -> str:
+    """Call the configured completion service and normalize transport failures."""
     key = os.getenv("META_API_KEY") or os.getenv("MODEL_API_KEY")
     if not key:
         raise HTTPException(status_code=400, detail="The analysis service is not configured. Use Demo mode or add the API key to .env.")
@@ -216,6 +218,7 @@ Problem: {problem}""".format(
         text = await meta_completion(prompt)
         text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
         result = Analysis(mode="meta", **json.loads(text))
+        # Keep model output within the same issue-count limit as demo results.
         result.issues = result.issues[:5]
         return neutralize_analysis_text(result)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
@@ -329,6 +332,7 @@ async def meta_hint(payload: HintRequest) -> HintResponse:
     authoritative_line = payload.issue_line or _diagnostic_line(payload.compiler_error)
     if authoritative_line is not None and not 1 <= authoritative_line <= line_count:
         authoritative_line = None
+    # Prefer a known runner location over any line guessed by the model.
     if authoritative_line is None and (timed_out or recursive_failure):
         authoritative_line = likely_non_terminating_line(payload.language, payload.code)
     prompt = """You are giving a beginner a specific but incomplete debugging hint. Do not reveal a full fix.
@@ -413,6 +417,7 @@ Code:
 
 
 async def generate_test_cases(payload: GenerateTestCasesRequest) -> GenerateTestCasesResponse:
+    """Generate distinct tests while retaining a local fallback for outages."""
     generation_count = payload.count
     file_names = sorted({workspace_file.name for workspace_file in payload.files} | {payload.active_file})
     target = detect_test_target(
@@ -458,6 +463,7 @@ async def generate_test_cases(payload: GenerateTestCasesRequest) -> GenerateTest
     loops = len(re.findall(r"\b(for|while|do)\b", source))
     functions = len(re.findall(r"\b(def|function|func)\b", source))
     input_calls = len(re.findall(r"\b(input|readline|scanf|Scanner)\b", source))
+    # These counts provide rough prompt context; they do not gate test generation.
     complexity_score = branches + (2 * loops) + functions + input_calls + max(0, len(payload.files) - 1)
     complexity = "simple" if complexity_score <= 3 else "moderate" if complexity_score <= 7 else "complex"
     existing_cases = "\n".join(
@@ -672,7 +678,9 @@ Complexity signals: {complexity_score} across {line_count} non-empty lines ({com
         )
         for case in payload.existing_cases
     }
+
     def accept_case(test_case: GeneratedTestCase) -> bool:
+        # Include fixtures and expected results so only genuinely identical cases collide.
         if any(fixture.file_name not in allowed_names for fixture in test_case.files):
             raise HTTPException(status_code=502, detail="The analysis service referenced a file outside this workspace.")
         if method_target and not test_case.invocation:

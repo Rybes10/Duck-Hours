@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
 
+// Load only the value helpers so these comparisons can run without a browser or Monaco.
 const source = fs.readFileSync('static/testcases.js', 'utf8');
 const start = source.indexOf('function normalizeOutput');
 const end = source.indexOf('function renderTestRunOutput');
@@ -16,6 +17,7 @@ function equal(actualText, expectedText, declaredType = '') {
   assert(context.typedValuesEqual(actual, expected), `${actualText} should equal ${expectedText}`);
 }
 
+// Empty strings and parenthesized string contents must stay distinct from harness formatting.
 equal("'hello'", 'hello');
 equal("''", '""');
 equal("'(a) + (b)'", "'(a) + (b)'");
